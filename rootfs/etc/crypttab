@@ -1,0 +1,3 @@
+# Copied into the initramfs (dracut install_items). Machine-local additions
+# made later are NOT seen by the initrd, which is fine for non-boot volumes.
+state PARTLABEL=state - tpm2-device=auto,tpm2-measure-pcr=yes,x-initrd.attach

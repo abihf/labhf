@@ -1,0 +1,11 @@
+[Unit]
+Description=Link labhf k3s manifests into the k3s auto-deploy directory
+Before=k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mkdir -p /var/lib/rancher/k3s/server/manifests
+ExecStart=/usr/bin/bash -c 'for f in /usr/share/labhf/k3s-manifests/*.yaml; do ln -sfn "$f" "/var/lib/rancher/k3s/server/manifests/labhf-$(basename "$f")"; done'
+
+[Install]
+WantedBy=k3s.service

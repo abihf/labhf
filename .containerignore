@@ -1,0 +1,5 @@
+# Only the public .auth files are copied into the image
+keys/*
+!keys/auth/
+vm/
+.git/

@@ -1,0 +1,39 @@
+#!/usr/bin/bash
+# Bind the LUKS state volume (/etc, /var) to the TPM with a literal PCR policy:
+#   0 firmware, 2 option ROMs, 3 option ROM config, 5 GPT/boot config,
+#   7 Secure Boot state + signing cert, 15 must still be zero (initrd only).
+# No PCR 4/11 => bootc upgrades (new UKI, same signing key) keep unlocking.
+#
+# usage: labhf-enroll-tpm [--wipe-password]
+# Re-run after BIOS / GPU firmware / dbx updates (unlock with recovery key).
+set -euo pipefail
+
+PCRS=${LABHF_PCRS:-0+2+3+5+7}
+ZERO=0000000000000000000000000000000000000000000000000000000000000000
+
+dev=$(cryptsetup status state 2>/dev/null | awk '$1=="device:"{print $2}')
+[[ -b ${dev:-} ]] || { echo "LUKS state volume (/dev/mapper/state) not found" >&2; exit 1; }
+
+sb=$(bootctl status 2>/dev/null | awk -F': *' '/Secure Boot:/{print $2; exit}')
+echo "device: $dev"
+echo "secure boot: ${sb:-unknown}"
+if [[ ${sb:-} != enabled* && ${LABHF_FORCE:-0} != 1 ]]; then
+    echo "Secure Boot is not enabled; PCR 7 would be meaningless. Set LABHF_FORCE=1 to override." >&2
+    exit 1
+fi
+
+pcr15=$(tpm2_pcrread sha256:15 2>/dev/null | awk '$1=="15:"{print $2}')
+echo "PCR15 now: ${pcr15:-?} (non-zero is expected: the state key was measured)"
+
+systemd-cryptenroll "$dev" \
+    --wipe-slot=tpm2 \
+    --tpm2-device=auto \
+    --tpm2-public-key= \
+    --tpm2-pcrs="${PCRS}+15:sha256=${ZERO}"
+
+if [[ ${1:-} == --wipe-password ]]; then
+    systemd-cryptenroll "$dev" --wipe-slot=password
+fi
+
+systemd-cryptenroll "$dev"   # list key slots
+echo "OK. Reboot to test automatic unlock."

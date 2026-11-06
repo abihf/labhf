@@ -1,0 +1,21 @@
+# Encrypted bootc state (per-deployment /etc + shared /var) at /sysroot/state.
+# Used twice:
+#  - initrd: pulled in by bootc-root-setup.service (drop-in), so /etc and /var
+#    are bound from the encrypted volume.
+#  - booted system: bootc's /sysroot is a non-recursive clone of the physical
+#    root, so the submount is mounted again for bootc upgrade/rollback.
+[Unit]
+Description=labhf encrypted state (/sysroot/state)
+DefaultDependencies=no
+After=sysroot.mount
+Before=bootc-root-setup.service initrd-root-fs.target local-fs.target umount.target
+Conflicts=umount.target
+
+[Mount]
+What=/dev/mapper/state
+Where=/sysroot/state
+Type=ext4
+Options=rw
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,9 @@
+# Baked into the signed UKI at build time; cannot be changed on the machine.
+# Root (unencrypted, image only) is found via GPT auto-discovery. The LUKS
+# state volume is set up from /etc/crypttab baked into the initramfs
+# (tpm2-measure-pcr=yes there: PCR 15 gets the volume key once unlocked).
+kargs = [
+  "rw",
+  "console=ttyS0,115200",
+  "console=tty0",
+]

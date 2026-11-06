@@ -1,0 +1,32 @@
+[Unit]
+Description=Auto-login gui session: cage + WPE MiniBrowser on tty1
+After=systemd-user-sessions.service plymouth-quit-wait.service network-online.target
+Wants=network-online.target
+# Fedora's VT console is kmscon (autovt@ -> kmsconvt@); it holds DRM master
+# on tty1, and cage then fails with "Could not take device: busy".
+Conflicts=getty@tty1.service kmsconvt@tty1.service autovt@tty1.service
+After=getty@tty1.service kmsconvt@tty1.service autovt@tty1.service
+
+[Service]
+Type=simple
+User=gui
+WorkingDirectory=~
+PAMName=cage
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=XDG_SESSION_TYPE=wayland
+# GUI_URL, GUI_GPU, GUI_OUTPUT, GUI_TRANSFORM: see /usr/bin/labhf-gui
+EnvironmentFile=-/etc/labhf/gui.env
+ExecStart=/usr/bin/labhf-gui
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

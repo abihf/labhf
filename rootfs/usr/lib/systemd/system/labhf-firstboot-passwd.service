@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply password hashes provided by labhf-install-disk
+After=systemd-sysusers.service
+Before=sshd.service systemd-user-sessions.service
+ConditionDirectoryNotEmpty=/etc/labhf/firstboot-passwd
+
+[Service]
+Type=oneshot
+# files are named after the user and contain a crypt(3) hash
+ExecStart=/usr/bin/bash -euc 'for f in /etc/labhf/firstboot-passwd/*; do u=$(basename "$f"); usermod -p "$(cat "$f")" "$u"; rm -f "$f"; done'
+
+[Install]
+WantedBy=multi-user.target

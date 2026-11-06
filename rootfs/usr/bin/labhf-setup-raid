@@ -1,0 +1,33 @@
+#!/usr/bin/bash
+# Create an (unencrypted) RAID5 data array and mount it at /srv/data.
+#   mdadm RAID5 -> ext4
+# usage: labhf-setup-raid /dev/sdX /dev/sdY /dev/sdZ [...]
+# DESTROYS the given disks.
+set -euo pipefail
+
+(( $# >= 3 )) || { echo "usage: $0 DISK DISK DISK [...]  (RAID5 needs >=3)" >&2; exit 1; }
+md=/dev/md/data
+mountpoint=/srv/data
+
+lsblk -o NAME,SIZE,MODEL,SERIAL "$@"
+read -r -p "ALL DATA on: $* will be destroyed. Type YES: " ans
+[[ $ans == YES ]] || { echo aborted; exit 1; }
+
+for d in "$@"; do wipefs -a "$d"; done
+mdadm --create "$md" --level=5 --raid-devices=$# --name=data --metadata=1.2 "$@"
+mkfs.ext4 -L data "$md"
+uuid=$(blkid -s UUID -o value "$md")
+
+if ! grep -q "name=.*:data" /etc/mdadm.conf 2>/dev/null; then
+    mdadm --detail --scan "$md" >> /etc/mdadm.conf
+fi
+mkdir -p "$mountpoint"
+# nofail: boot even if the array is degraded/missing; data only, never executed
+grep -q " $mountpoint " /etc/fstab 2>/dev/null || \
+    echo "UUID=$uuid $mountpoint ext4 defaults,nofail,nodev,nosuid,noexec,x-systemd.device-timeout=60s 0 2" >> /etc/fstab
+
+systemctl daemon-reload
+mount "$mountpoint"
+restorecon -R "$mountpoint" || true
+df -h "$mountpoint"
+cat /proc/mdstat

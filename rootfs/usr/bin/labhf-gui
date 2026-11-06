@@ -1,0 +1,92 @@
+#!/usr/bin/bash
+# Kiosk session for gui.service: pick the display GPU, then cage + MiniBrowser.
+#
+# The PC has two GPUs: the integrated AMD (drives the screen) and the NVIDIA
+# (compute for k3s). cardN/renderDN numbers depend on driver load order, so the
+# GPU is chosen by kernel driver name and pinned for wlroots, Mesa and WebKit.
+#
+# Settings (machine-local, /etc/labhf/gui.env, read by gui.service):
+#   GUI_URL=http://localhost:3000   page to show
+#   GUI_GPU=amdgpu                  preferred driver (falls back to any non-NVIDIA
+#                                   card, then any card); e.g. amdgpu, i915, nvidia
+#   GUI_OUTPUT=HDMI-A-1             output to rotate, "all", or empty for none
+#   GUI_TRANSFORM=90                normal, 90, 180, 270, flipped-90, ...
+#   GUI_BROWSER_ARGS=""             extra MiniBrowser arguments
+set -uo pipefail
+
+: "${GUI_URL:=http://localhost:3000}" "${GUI_GPU:=amdgpu}"
+: "${GUI_OUTPUT=HDMI-A-1}" "${GUI_TRANSFORM:=90}" "${GUI_BROWSER_ARGS:=}"
+export GUI_URL GUI_OUTPUT GUI_TRANSFORM GUI_BROWSER_ARGS
+
+log() { echo "labhf-gui: $*" >&2; }
+
+# --- inside cage: rotate, then become the browser ----------------------------
+if [[ ${1:-} == --in-cage ]]; then
+    if [[ -n $GUI_OUTPUT && $GUI_TRANSFORM != normal ]]; then
+        if [[ $GUI_OUTPUT == all ]]; then
+            outputs=$(wlr-randr | awk '/^[^ ]/{print $1}')
+        else
+            outputs=$GUI_OUTPUT
+        fi
+        for o in $outputs; do
+            wlr-randr --output "$o" --transform "$GUI_TRANSFORM" \
+                || log "could not rotate $o (outputs: $(wlr-randr | awk '/^[^ ]/{printf "%s ", $1}'))"
+        done
+    fi
+    # shellcheck disable=SC2086  # GUI_BROWSER_ARGS is a word list
+    exec /usr/libexec/wpe-webkit-2.0/MiniBrowser -f -p $GUI_BROWSER_ARGS "$GUI_URL"
+fi
+
+# --- pick the GPU ------------------------------------------------------------
+card_driver() { basename "$(readlink -f "/sys/class/drm/$1/device/driver")"; }
+card_connected() { grep -qx connected /sys/class/drm/"$1"-*/status 2>/dev/null; }
+
+# $1: driver name, "other" (not nvidia) or "any"; $2: 1 = needs a connected output
+find_card() {
+    local c name drv
+    for c in /sys/class/drm/card[0-9]*; do
+        name=${c##*/}
+        [[ $name == *-* ]] && continue           # connector, not a card
+        drv=$(card_driver "$name")
+        case $1 in
+            any) ;;
+            other) [[ $drv == nvidia ]] && continue ;;
+            *) [[ $drv == "$1" ]] || continue ;;
+        esac
+        (( $2 )) && ! card_connected "$name" && continue
+        echo "$name"; return 0
+    done
+    return 1
+}
+
+card=
+# a loaded driver may still be probing its card at boot; no module, no wait
+for _ in $(seq 20); do
+    card=$(find_card "$GUI_GPU" 1 || find_card "$GUI_GPU" 0) && break
+    [[ -d /sys/module/${GUI_GPU//-/_} ]] || break
+    sleep 0.5
+done
+if [[ -z $card ]]; then
+    card=$(find_card other 1 || find_card other 0 || find_card any 0) || {
+        log "no DRM card found"; exit 1; }
+    log "no $GUI_GPU card, falling back to $card ($(card_driver "$card"))"
+fi
+drv=$(card_driver "$card")
+render=$(ls "/sys/class/drm/$card/device/drm" | grep -m1 '^renderD')
+
+export WLR_DRM_DEVICES=/dev/dri/$card            # cage scans out only here
+if [[ -n $render ]]; then
+    export WLR_RENDER_DRM_DEVICE=/dev/dri/$render  # cage renders here
+    export WEBKIT_WEB_RENDER_DEVICE_FILE=/dev/dri/$render
+fi
+# NVIDIA's EGL vendor ranks first in glvnd; keep it out of a Mesa GPU's session
+if [[ $drv != nvidia ]]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+fi
+log "gpu $card${render:+/$render} ($drv), url $GUI_URL, rotate ${GUI_OUTPUT:-none} $GUI_TRANSFORM"
+
+# pam_systemd gives local-seat sessions ambient CAP_WAKE_ALARM; WebKit's
+# bubblewrap sandbox aborts on any capability ("Unexpected capabilities but
+# not setuid"), so drop them before cage starts.
+exec setpriv --inh-caps=-all --ambient-caps=-all -- \
+    cage -- "$0" --in-cage

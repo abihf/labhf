@@ -1,0 +1,171 @@
+#!/usr/bin/bash
+# Install this image onto a disk:
+#   ESP (vfat) + root (ext4+verity, plain: image only) + state (LUKS2 ext4: /etc, /var)
+#
+# Runs from inside the image itself (same command for QEMU and the real PC):
+#   podman run --rm -it --privileged --pid=host --ipc=host \
+#     --security-opt label=type:unconfined_t \
+#     -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
+#     IMAGE labhf-install-disk [options] /dev/DISK
+#
+# Options (env):
+#   LABHF_IMAGE         image ref in local containers-storage (required)
+#   LABHF_TARGET_IMGREF where `bootc upgrade` pulls from (default: LABHF_IMAGE)
+#   LABHF_SSH_PUBKEY    public key installed for root and abi
+#   LABHF_ABI_PASSWORD  password for user abi (sudo); prompted if unset
+#   LABHF_LUKS_PASSWORD temporary passphrase (prompted if unset)
+#   LABHF_YES=1         don't ask before wiping
+set -euo pipefail
+
+disk=${1:?usage: labhf-install-disk /dev/DISK}
+image=${LABHF_IMAGE:?set LABHF_IMAGE}
+target_imgref=${LABHF_TARGET_IMGREF:-$image}
+mnt=/run/labhf-target   # /mnt is a dangling symlink (var/mnt) in bootc images
+mapper=labhf-state
+
+[[ -b $disk ]] || { echo "not a block device: $disk" >&2; exit 1; }
+
+lsblk -o NAME,SIZE,TYPE,MODEL,FSTYPE "$disk"
+if [[ ${LABHF_YES:-0} != 1 ]]; then
+    read -r -p "ALL DATA on $disk will be destroyed. Type the device path to continue: " ans
+    [[ $ans == "$disk" ]] || { echo aborted; exit 1; }
+fi
+
+if [[ -z ${LABHF_LUKS_PASSWORD:-} ]]; then
+    read -r -s -p "Temporary LUKS passphrase (used until TPM enrollment): " p1; echo
+    read -r -s -p "Again: " p2; echo
+    [[ $p1 == "$p2" && -n $p1 ]] || { echo "passphrases differ/empty" >&2; exit 1; }
+    LABHF_LUKS_PASSWORD=$p1
+fi
+
+if [[ -z ${LABHF_ABI_PASSWORD:-} ]]; then
+    read -r -s -p "Password for user abi (sudo): " p1; echo
+    read -r -s -p "Again: " p2; echo
+    [[ $p1 == "$p2" && -n $p1 ]] || { echo "passwords differ/empty" >&2; exit 1; }
+    LABHF_ABI_PASSWORD=$p1
+fi
+abi_hash=$(printf '%s' "$LABHF_ABI_PASSWORD" | openssl passwd -6 -stdin)
+unset LABHF_ABI_PASSWORD p1 p2
+
+work=$(mktemp -d)
+cleanup() {
+    set +e
+    umount -R "$mnt" 2>/dev/null
+    cryptsetup close "$mapper" 2>/dev/null
+    rm -rf "$work"
+}
+trap cleanup EXIT
+
+keyfile=$work/install.key
+(umask 077; head -c 64 /dev/urandom > "$keyfile")
+
+echo ">> partitioning"
+systemd-repart --empty=force --dry-run=no --discard=no \
+    --definitions=/usr/lib/labhf/repart.d \
+    --key-file="$keyfile" \
+    "$disk"
+udevadm settle || sleep 2
+partprobe "$disk" 2>/dev/null || true
+
+# Read GPT names with a low-level probe: inside a container there is no udev
+# database, so lsblk's PARTLABEL column is empty.
+part_by_label() {
+    local p
+    for p in $(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{print $1}'); do
+        [[ $(blkid -p -s PART_ENTRY_NAME -o value "$p" 2>/dev/null) == "$1" ]] && { echo "$p"; return; }
+    done
+}
+esp=$(part_by_label ESP)
+root=$(part_by_label root)
+state=$(part_by_label state)
+[[ -b $esp && -b $root && -b $state ]] || { echo "partitions not found" >&2; lsblk "$disk"; exit 1; }
+
+echo ">> LUKS key slots: passphrase + recovery key"
+NEWPASSWORD=$LABHF_LUKS_PASSWORD systemd-cryptenroll --unlock-key-file="$keyfile" --password "$state"
+echo
+echo "================= RECOVERY KEY — write it down / store offline ================="
+systemd-cryptenroll --unlock-key-file="$keyfile" --recovery-key "$state"
+echo "================================================================================="
+echo
+
+cryptsetup open --key-file="$keyfile" "$state" "$mapper"
+# repart's install key is no longer needed
+cryptsetup luksKillSlot -q "$state" 0
+
+echo ">> enabling fs-verity on root ext4"
+tune2fs -O verity "$root"
+
+mkdir -p "$mnt"
+mount "$root" "$mnt"
+mkdir -p "$mnt/state" "$mnt/boot"
+mount "/dev/mapper/$mapper" "$mnt/state"
+mount "$esp" "$mnt/boot"
+
+echo ">> bootc install to-filesystem"
+bootc install to-filesystem \
+    --source-imgref "containers-storage:$image" \
+    --target-imgref "$target_imgref" \
+    --bootloader=systemd \
+    --composefs-backend \
+    --skip-finalize \
+    "$mnt"
+
+# Machine-local config in the deployment's /etc
+etcs=("$mnt"/state/deploy/*/etc)
+if [[ ${#etcs[@]} -eq 1 && -d ${etcs[0]} ]]; then
+    etc=${etcs[0]}
+    if [[ -n ${LABHF_SSH_PUBKEY:-} ]]; then
+        install -d -m 0755 "$etc/ssh/authorized_keys.d"
+        for u in root abi; do
+            printf '%s\n' "$LABHF_SSH_PUBKEY" > "$etc/ssh/authorized_keys.d/$u"
+            chmod 0644 "$etc/ssh/authorized_keys.d/$u"
+        done
+        echo ">> installed ssh key for root, abi"
+    fi
+    # applied by labhf-firstboot-passwd.service after sysusers creates abi
+    install -d -m 0700 "$etc/labhf/firstboot-passwd"
+    (umask 077; printf '%s\n' "$abi_hash" > "$etc/labhf/firstboot-passwd/abi")
+    echo ">> staged password for abi"
+
+    # Files created here have no SELinux label (the host may not even run
+    # SELinux); enforcing sshd can't read unlabeled_t. Label them from the
+    # image's policy, with the deployment dir as the root (deploy/<id>/etc -> /etc).
+    fc=/etc/selinux/targeted/contexts/files/file_contexts
+    labelled=("$etc/labhf")
+    [[ -d $etc/ssh/authorized_keys.d ]] && labelled+=("$etc/ssh/authorized_keys.d")
+    if setfiles -F -r "${etc%/etc}" "$fc" "${labelled[@]}"; then
+        ls -lZd "${labelled[@]}"
+    else
+        echo "WARN: SELinux labeling failed; on first boot run: restorecon -R /etc/ssh/authorized_keys.d /etc/labhf" >&2
+    fi
+else
+    echo "WARN: could not locate deployment /etc (${etcs[*]}); skipping ssh key" >&2
+fi
+
+# systemd-boot: show menu briefly; offer Secure Boot key enrollment on a
+# machine in Setup Mode (real PC). Keys are under loader/keys/labhf/.
+if [[ -f $mnt/boot/loader/loader.conf ]]; then
+    sed -i '/^#\?timeout/d; /^secure-boot-enroll/d' "$mnt/boot/loader/loader.conf"
+fi
+{
+    echo "timeout 3"
+    echo "secure-boot-enroll manual"
+} >> "$mnt/boot/loader/loader.conf"
+if [[ -d /usr/lib/bootc/install/secureboot-keys/labhf && ! -d $mnt/boot/loader/keys/labhf ]]; then
+    install -d "$mnt/boot/loader/keys/labhf"
+    cp /usr/lib/bootc/install/secureboot-keys/labhf/*.auth "$mnt/boot/loader/keys/labhf/"
+fi
+
+echo ">> sanity: nothing from bootc state may land on the plain root"
+umount "$mnt/state"
+if [[ -n $(ls -A "$mnt/state") ]]; then
+    echo "ERROR: files written under the state mount point on the PLAIN root:" >&2
+    ls -la "$mnt/state" >&2
+    exit 1
+fi
+mount "/dev/mapper/$mapper" "$mnt/state"
+
+echo ">> ESP contents"
+find "$mnt/boot" -maxdepth 4 | sort
+sync
+echo ">> done. First boot asks for the temporary passphrase; then run labhf-enroll-tpm."

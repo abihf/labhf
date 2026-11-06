@@ -1,0 +1,6 @@
+# Host-side helper tools (key generation, OVMF vars) so the host only needs
+# podman + qemu + swtpm.
+ARG FEDORA=45
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA}
+RUN dnf -y install openssl sbsigntools python3-virt-firmware edk2-ovmf util-linux \
+    && dnf clean all

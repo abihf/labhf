@@ -1,0 +1,4 @@
+# Machine-local after install (/etc is persistent and 3-way merged on upgrade).
+selinux: true
+write-kubeconfig-mode: "0600"
+# data lives on the encrypted root under /var/lib/rancher/k3s

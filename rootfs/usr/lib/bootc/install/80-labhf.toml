@@ -1,0 +1,6 @@
+[install]
+bootloader = "systemd"
+
+# fs-verity is required for sealed images
+[install.filesystem.root]
+type = "ext4"
