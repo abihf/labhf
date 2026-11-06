@@ -3,3 +3,6 @@ keys/
 vm/
 *.raw
 *.qcow2
+
+# machine-specific migration notes (hardware, disks, network): private
+MIGRATION.md

@@ -8,25 +8,29 @@ kver=$(ls /usr/lib/modules)
 # --- units -------------------------------------------------------------------
 systemctl enable \
     sshd.service \
+    systemd-networkd.service \
+    systemd-resolved.service \
     k3s.service \
-    gui.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
-    sysroot-state.mount
+    sysroot-state.mount \
+    media-public.mount
 systemctl set-default multi-user.target
+# DNS from networkd (DNS= / DHCP) goes through resolved's stub
+ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 # / is composefs (no block device); root partition size is fixed by repart.d
 systemctl mask systemd-growfs-root.service
 
-# --- sign systemd-boot with our db key (part of the sealed tree) -------------
-/usr/lib/systemd/systemd-sbsign sign \
-    --private-key /run/secrets/sb_key \
-    --certificate /run/secrets/sb_cert \
-    --output /tmp/systemd-bootx64.efi.signed \
-    /usr/lib/systemd/boot/efi/systemd-bootx64.efi
-install -m 0644 /tmp/systemd-bootx64.efi.signed /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed
-install -m 0644 /tmp/systemd-bootx64.efi.signed /usr/lib/systemd/boot/efi/systemd-bootx64.efi
+# systemd-boot is signed in the sdboot-sign stage (Containerfile): this tree
+# has third-party packages installed, so the db key is never mounted here.
 
 # --- initramfs (bootc composefs module, LUKS + TPM2) -------------------------
+# The base image adds dracut's clevis module; clevis-dracut left together with
+# NetworkManager (we unlock with systemd-cryptenroll's TPM2 token, not clevis)
+for f in $(grep -lsw clevis /usr/lib/dracut/dracut.conf.d/*.conf /etc/dracut.conf.d/*.conf); do
+    cat "$f"
+    sed -i -E '/add_dracutmodules/ s/\<clevis(-pin-[a-z0-9]+)?\>//g' "$f"
+done
 export DRACUT_NO_XATTR=1
 # /root -> var/roothome; dracut's base module copies /root and fails if the
 # target is missing. The dir is created by tmpfiles at boot, so remove it again.
@@ -35,6 +39,14 @@ dracut --force --kver "$kver" "/usr/lib/modules/${kver}/initramfs.img"
 (( roothome_tmp )) && rmdir /var/roothome
 lsinitrd "/usr/lib/modules/${kver}/initramfs.img" | grep -E 'bootc|systemd-cryptsetup|libtss2-esys|sysroot-state|crypttab' | head -20
 lsinitrd -f /etc/crypttab "/usr/lib/modules/${kver}/initramfs.img"
+
+# --- data mount points --------------------------------------------------------
+# /media is a symlink to run/media (tmpfs) in Fedora. Make the mount points real
+# directories on the sealed, read-only root: if a disk is missing, writes to it
+# fail (EROFS) instead of filling RAM. Mounted by media-public.mount and by
+# machine-local fstab entries (labhf-setup-raid: /media/data; backup disk).
+rm -f /media
+mkdir -p /media/data /media/public /media/backup
 
 # --- scrub state that must not be sealed -------------------------------------
 # keep /ostree -> sysroot/ostree (bootc lint baseimage-root requires it)

@@ -1,34 +1,93 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Create an (unencrypted) RAID5 data array and mount it at /srv/data.
-#   mdadm RAID5 -> ext4
-# usage: labhf-setup-raid /dev/sdX /dev/sdY /dev/sdZ [...]
-# DESTROYS the given disks.
+# Set up the (unencrypted) mdadm data array and mount it at /media/data.
+#
+#   labhf-setup-raid adopt [MD]        use an EXISTING array (keeps the data):
+#                                      assemble, record it in /etc/mdadm.conf,
+#                                      add the /media/data fstab entry
+#   labhf-setup-raid create DISK...    new RAID5 + ext4 (DESTROYS the disks)
+#
+# /media/data is required by k3s (as on the old Arch install): if the array is
+# missing, the machine still boots (nofail) but k3s stays down, so media apps
+# never see an empty library. context=container_file_t lets k3s pods use it
+# through hostPath with SELinux enforcing, without relabelling the files.
 set -euo pipefail
 
-(( $# >= 3 )) || { echo "usage: $0 DISK DISK DISK [...]  (RAID5 needs >=3)" >&2; exit 1; }
-md=/dev/md/data
-mountpoint=/srv/data
+mountpoint=/media/data
+opts="nofail,nodev,nosuid,noexec,noatime,x-systemd.device-timeout=90s"
+opts+=",x-systemd.required-by=k3s.service,context=system_u:object_r:container_file_t:s0"
 
-lsblk -o NAME,SIZE,MODEL,SERIAL "$@"
-read -r -p "ALL DATA on: $* will be destroyed. Type YES: " ans
-[[ $ans == YES ]] || { echo aborted; exit 1; }
+die() { echo "error: $*" >&2; exit 1; }
+usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+(( EUID == 0 )) || die "run as root"
+[[ -d $mountpoint && ! -L /media ]] || die "$mountpoint is not a directory on this image (needs an image with /media/{data,public,backup})"
 
-for d in "$@"; do wipefs -a "$d"; done
-mdadm --create "$md" --level=5 --raid-devices=$# --name=data --metadata=1.2 "$@"
-mkfs.ext4 -L data "$md"
-uuid=$(blkid -s UUID -o value "$md")
+record_array() {  # $1 = md device
+    local md=$1 uuid
+    uuid=$(mdadm --detail --export "$md" | sed -n 's/^MD_UUID=//p')
+    [[ -n $uuid ]] || die "no MD_UUID for $md"
+    if grep -qs "UUID=$uuid" /etc/mdadm.conf; then
+        echo ">> $md already in /etc/mdadm.conf"
+    else
+        # no spares=N: a resyncing member is counted as a spare, and a stale
+        # count makes `mdadm --monitor` report SparesMissing
+        mdadm --detail --scan "$md" | sed -E 's/ spares=[0-9]+//' >> /etc/mdadm.conf
+        echo ">> added to /etc/mdadm.conf: $(tail -1 /etc/mdadm.conf)"
+    fi
+}
 
-if ! grep -q "name=.*:data" /etc/mdadm.conf 2>/dev/null; then
-    mdadm --detail --scan "$md" >> /etc/mdadm.conf
-fi
-mkdir -p "$mountpoint"
-# nofail: boot even if the array is degraded/missing; data only, never executed
-grep -q " $mountpoint " /etc/fstab 2>/dev/null || \
-    echo "UUID=$uuid $mountpoint ext4 defaults,nofail,nodev,nosuid,noexec,x-systemd.device-timeout=60s 0 2" >> /etc/fstab
+add_fstab() {  # $1 = md device
+    local md=$1 uuid fstype
+    uuid=$(blkid -s UUID -o value "$md") || die "no filesystem on $md"
+    fstype=$(blkid -s TYPE -o value "$md")
+    if grep -qsE "^[^#]*[[:space:]]$mountpoint[[:space:]]" /etc/fstab; then
+        echo ">> $mountpoint already in /etc/fstab, leaving it alone:"
+        grep -E "[[:space:]]$mountpoint[[:space:]]" /etc/fstab
+    else
+        echo "UUID=$uuid $mountpoint $fstype $opts 0 2" >> /etc/fstab
+        echo ">> added to /etc/fstab: $(tail -1 /etc/fstab)"
+    fi
+    systemctl daemon-reload
+    findmnt -rn "$mountpoint" >/dev/null || mount "$mountpoint"
+    df -h "$mountpoint"
+    cat /proc/mdstat
+}
 
-systemctl daemon-reload
-mount "$mountpoint"
-restorecon -R "$mountpoint" || true
-df -h "$mountpoint"
-cat /proc/mdstat
+cmd=${1:-}; shift || true
+case $cmd in
+adopt)
+    md=${1:-}
+    if [[ -z $md ]]; then
+        # udev usually auto-assembles at boot; otherwise assemble what is found
+        mapfile -t arrays < <(mdadm --detail --scan | awk '{print $2}')
+        if (( ${#arrays[@]} == 0 )); then
+            mdadm --assemble --scan || true
+            mapfile -t arrays < <(mdadm --detail --scan | awk '{print $2}')
+        fi
+        (( ${#arrays[@]} == 1 )) || die "found ${#arrays[@]} arrays (${arrays[*]:-none}); pass one, e.g. $0 adopt /dev/md127"
+        md=${arrays[0]}
+    fi
+    md=$(readlink -f "$md")
+    [[ -b $md ]] || die "$md is not a block device"
+    mdadm --detail "$md" | grep -E "Raid Level|Array Size|State :|Active Devices|Failed Devices|Name :"
+    blkid "$md"
+    findmnt -rn -S "$md" >/dev/null && die "$md is already mounted somewhere: $(findmnt -rn -S "$md" -o TARGET)"
+    read -r -p "Use this array as $mountpoint (no data is changed)? [y/N] " ans
+    [[ $ans == [yY] ]] || { echo aborted; exit 1; }
+    record_array "$md"
+    add_fstab "$md"
+    ;;
+create)
+    (( $# >= 3 )) || die "RAID5 needs at least 3 disks"
+    md=/dev/md/data
+    lsblk -o NAME,SIZE,MODEL,SERIAL "$@"
+    read -r -p "ALL DATA on: $* will be destroyed. Type YES: " ans
+    [[ $ans == YES ]] || { echo aborted; exit 1; }
+    for d in "$@"; do wipefs -a "$d"; done
+    mdadm --create "$md" --level=5 --raid-devices=$# --name=data --metadata=1.2 "$@"
+    mkfs.ext4 -L data "$md"
+    record_array "$md"
+    add_fstab "$md"
+    ;;
+*) usage ;;
+esac

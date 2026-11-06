@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Install this image onto a disk:
 #   ESP (vfat) + root (ext4+verity, plain: image only) + state (LUKS2 ext4: /etc, /var)
+#   + public (plain ext4, /media/public)
 #
 # Runs from inside the image itself (same command for QEMU and the real PC):
 #   podman run --rm -it --privileged --pid=host --ipc=host \
@@ -14,7 +15,8 @@
 #   LABHF_TARGET_IMGREF where `bootc upgrade` pulls from (default: LABHF_IMAGE)
 #   LABHF_SSH_PUBKEY    public key installed for root and abi
 #   LABHF_ABI_PASSWORD  password for user abi (sudo); prompted if unset
-#   LABHF_LUKS_PASSWORD temporary passphrase (prompted if unset)
+#   LABHF_LUKS_PASSWORD LUKS passphrase (prompted if unset); stays as the
+#                       fallback when TPM unlock fails, so make it strong
 #   LABHF_YES=1         don't ask before wiping
 set -euo pipefail
 
@@ -33,11 +35,14 @@ if [[ ${LABHF_YES:-0} != 1 ]]; then
 fi
 
 if [[ -z ${LABHF_LUKS_PASSWORD:-} ]]; then
-    read -r -s -p "Temporary LUKS passphrase (used until TPM enrollment): " p1; echo
+    echo "LUKS passphrase: the only fallback when TPM unlock fails (BIOS/firmware"
+    echo "update, other disk). There is no recovery key: use a strong one, store it safely."
+    read -r -s -p "LUKS passphrase: " p1; echo
     read -r -s -p "Again: " p2; echo
     [[ $p1 == "$p2" && -n $p1 ]] || { echo "passphrases differ/empty" >&2; exit 1; }
     LABHF_LUKS_PASSWORD=$p1
 fi
+(( ${#LABHF_LUKS_PASSWORD} >= 12 )) || echo "warning: LUKS passphrase is shorter than 12 characters" >&2
 
 if [[ -z ${LABHF_ABI_PASSWORD:-} ]]; then
     read -r -s -p "Password for user abi (sudo): " p1; echo
@@ -81,13 +86,9 @@ root=$(part_by_label root)
 state=$(part_by_label state)
 [[ -b $esp && -b $root && -b $state ]] || { echo "partitions not found" >&2; lsblk "$disk"; exit 1; }
 
-echo ">> LUKS key slots: passphrase + recovery key"
+echo ">> LUKS key slot: passphrase (TPM is added later by labhf-enroll-tpm)"
 NEWPASSWORD=$LABHF_LUKS_PASSWORD systemd-cryptenroll --unlock-key-file="$keyfile" --password "$state"
-echo
-echo "================= RECOVERY KEY — write it down / store offline ================="
-systemd-cryptenroll --unlock-key-file="$keyfile" --recovery-key "$state"
-echo "================================================================================="
-echo
+unset LABHF_LUKS_PASSWORD
 
 cryptsetup open --key-file="$keyfile" "$state" "$mapper"
 # repart's install key is no longer needed
@@ -169,4 +170,4 @@ mount "/dev/mapper/$mapper" "$mnt/state"
 echo ">> ESP contents"
 find "$mnt/boot" -maxdepth 4 | sort
 sync
-echo ">> done. First boot asks for the temporary passphrase; then run labhf-enroll-tpm."
+echo ">> done. First boot asks for the LUKS passphrase; then run labhf-enroll-tpm."

@@ -3,3 +3,4 @@ keys/*
 !keys/auth/
 vm/
 .git/
+MIGRATION.md

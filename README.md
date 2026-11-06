@@ -5,10 +5,12 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Requirement | How |
 |---|---|
 | Atomic updates | bootc **composefs backend**, images pulled from an OCI registry, `bootc upgrade` / `rollback` |
-| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods |
+| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0 |
-| RAID5 | `mdadm` → ext4 at `/srv/data`, unencrypted (public data), mounted `nofail,nodev,nosuid,noexec` |
+| Data | existing mdadm RAID5 (USB) → `/media/data`, NVMe partition `public` → `/media/public`; both unencrypted, labelled `container_file_t` for k3s hostPaths |
+| Network | systemd-networkd + systemd-resolved (no NetworkManager); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
+| VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
 | Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by the installer; `gui` (uid 2000) runs the dashboard |
@@ -38,8 +40,8 @@ Host needs `podman`, `qemu`, `swtpm`, `make` (`sudo pacman -S podman` on Arch/Ca
 make tools        # helper container
 make keys         # once; keys/db.key is the crown jewel
 make build        # -> localhost/labhf:latest
-make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords, prints the RECOVERY KEY
-make vm-run       # Secure Boot + swtpm; type the temporary passphrase
+make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords
+make vm-run       # Secure Boot + swtpm; type the LUKS passphrase
 make vm-ssh       # ssh abi@localhost -p 2222
 ```
 
@@ -52,7 +54,7 @@ bootctl status               # Secure Boot: enabled (user)
 findmnt /sysroot/state       # /dev/mapper/state (must be mounted!)
 labhf-enroll-tpm             # bind LUKS state to TPM (PCR 0,2,3,5,7 + 15=0)
 reboot                       # should unlock without a prompt
-labhf-setup-raid /dev/vdb /dev/vdc /dev/vdd   # RAID5 test
+labhf-setup-raid create /dev/vdb /dev/vdc /dev/vdd   # RAID5 test (adopt: reuse one)
 ```
 
 ### Dashboard settings (`/etc/labhf/gui.env`)
@@ -87,13 +89,88 @@ needed. Images built before `labhf-gui` used an `ExecStart=` drop-in in
 fails with `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied`, and the
 page stays black. Switching the GPU kept TPM unlock working (PCRs unchanged).
 
+### Network
+
+systemd-networkd manages the network; NetworkManager is not in the image. The
+image ships `/usr/lib/systemd/network/80-labhf-wired.network` (DHCP on
+`en*`/`eth*`), so a fresh install comes up without any configuration. Files in
+`/etc/systemd/network/` are machine-local (on the encrypted state volume,
+kept across upgrades), and a lower-numbered file that matches the same NIC
+replaces the default, e.g. a static address:
+
+```ini
+# /etc/systemd/network/20-wired.network
+[Match]
+Name=en*
+
+[Network]
+Address=192.0.2.10/24
+Gateway=192.0.2.1
+DNS=192.0.2.1
+```
+
+Then `sudo networkctl reload` and `networkctl status`. Only links matching a
+`.network` file are touched, so k3s's `cni0`, `flannel.1` and `veth*` stay
+unmanaged. `network-online.target` waits for any one link (60s at most), so an
+unplugged second NIC doesn't hold boot. Kernel names (`eth0`) instead of
+`enp…`: `sudo ln -s /dev/null /etc/systemd/network/99-default.link`.
+
+### WireGuard VPN
+
+`wg0` is a networkd `.netdev` + `.network` pair; the private key lives in the
+`.netdev`, so keep it readable only by networkd:
+
+```ini
+# /etc/systemd/network/30-wg0.netdev   (root:systemd-network, mode 0640)
+[NetDev]
+Name=wg0
+Kind=wireguard
+
+[WireGuard]
+PrivateKey=...
+ListenPort=51820
+
+[WireGuardPeer]
+PublicKey=...
+AllowedIPs=10.0.0.2/32
+```
+
+```ini
+# /etc/systemd/network/35-wg0.network
+[Match]
+Name=wg0
+
+[Network]
+Address=10.0.0.1/24
+```
+
+`sudo networkctl reload && sudo wg show`. `wg-quick@wg0` with
+`/etc/wireguard/wg0.conf` also works; use one or the other for an interface.
+
 ## Disk layout
 
 ```
 p1 ESP    vfat 1G      signed systemd-boot + signed UKIs
 p2 root   ext4 40G     PLAIN: /composefs (image objects), /state = mount point
 p3 state  LUKS2 ext4   deploy/<id>/etc, os/default/var  -> /etc, /var, /home
+p4 public ext4         PLAIN: fast public data -> /media/public
 ```
+
+state and public split the space after root (equal weights, state capped at
+100G): ~98G each on the 256G NVMe.
+
+Data mounts (`/media` is a real directory on the sealed root, not Fedora's
+`run/media` symlink, so a missing disk means read-only errors, never writes
+into RAM or onto the state volume):
+
+| Mount | Source | Set up by | If missing |
+|---|---|---|---|
+| `/media/public` | NVMe `public` (by partlabel) | `media-public.mount` (image) | boots; k3s starts, writes fail (EROFS) |
+| `/media/data` | mdadm array, fstab by UUID | `labhf-setup-raid adopt` (machine `/etc/fstab`) | boots (`nofail`); **k3s stays down** (`x-systemd.required-by`), so media apps never see an empty library |
+| `/media/backup` | backup disk, fstab by UUID | by hand (fstab, e.g. `x-systemd.automount`) | |
+
+Both mounts use `context=system_u:object_r:container_file_t:s0`: with SELinux
+enforcing, k3s pods may use them through hostPath, and 11T never needs relabelling.
 
 `sysroot-state.mount` mounts p3 twice: in the initrd (bootc-root-setup.service
 requires it, so `/etc` and `/var` always come from the encrypted volume) and in
@@ -109,7 +186,7 @@ From a live USB, without any key:
   (fs-verity + the digest in the UKI reject them), so you fix a bad image by
   booting the previous entry or deploying a new image.
 
-Deploying a new image or fixing `/etc` needs `state` unlocked (recovery key):
+Deploying a new image or fixing `/etc` needs `state` unlocked (LUKS passphrase):
 `cryptsetup open /dev/disk/by-partlabel/state state`.
 
 ## Updates
@@ -160,6 +237,27 @@ tar -C keys -cz auth | base64 -w0 | gh secret set SB_AUTH_TGZ   # public .auth f
 Anyone with write access to the repo's workflows can use the db key, and an
 image signed with it boots on the PC: keep the repo's collaborators and
 Actions settings tight. Pull requests are never built with the secrets.
+The checkout action and the podman image are pinned by commit / digest
+(bump them deliberately), since this job holds the key.
+
+#### Where the db key is used
+
+An image signed with the db key unlocks the TPM-sealed `state` volume, so the
+key is mounted only in `--network=none` build steps of stages built from the
+plain Fedora base, which run Fedora's tools and our scripts only:
+
+| Stage | Signs | With |
+|---|---|---|
+| `nvidia-sign` | NVIDIA `.ko` files | kernel-devel's `sign-file` |
+| `sdboot-sign` | systemd-boot | `systemd-sbsign` |
+| `sealer` | the UKI | `bootc container ukify` (the sealer's own bootc, byte-identical to the target's) |
+
+RPM Fusion's akmods build, the RPM Fusion / COPR / NVIDIA / k3s installs and
+dracut (with installed packages' modules) run without the key, so their code
+can neither send it out nor hide it in the image. The kmod RPM is built
+unsigned; `packages.sh` lays the signed modules over its files and fails on any
+module without our signature (so `rpm -V kmod-nvidia-*` reports them as
+changed; expected).
 
 Point the PC at it with `sudo bootc switch ghcr.io/<owner>/labhf:latest`. New
 ghcr packages are **private**: either make the package public (it then
@@ -169,28 +267,38 @@ machine a read-only token in `/etc/ostree/auth.json`
 
 ## Installing on the real PC
 
+`labhf-install-disk` **wipes the whole target disk** (ESP, root, state,
+public). Back up anything on it first, and unplug data disks you want to keep
+so it can only see the target. Machine-specific notes (e.g. migrating an
+existing install) belong in a git-ignored `MIGRATION.md`.
+
 1. Back up `keys/`. Only `keys/db.key` + `keys/db.crt` are needed to build
-   (store them as CI secrets later); keep `PK.key`/`KEK.key` offline.
-2. Firmware: enable TPM 2.0, **clear Secure Boot keys / enter Setup Mode**.
-3. Boot any live Linux with podman (e.g. Fedora live), then:
+   (CI secrets); keep `PK.key`/`KEK.key` offline.
+2. Firmware: enable TPM 2.0, **clear the Secure Boot keys / enter Setup Mode**.
+3. Boot a live Linux with podman (e.g. Fedora live), then:
    ```bash
-   sudo podman pull <registry>/labhf:latest
+   sudo podman pull ghcr.io/<owner>/labhf:latest
    sudo podman run --rm -it --privileged --pid=host --ipc=host \
      --security-opt label=type:unconfined_t \
      -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
-     -e LABHF_IMAGE=<registry>/labhf:latest \
+     -e LABHF_IMAGE=ghcr.io/<owner>/labhf:latest \
      -e LABHF_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" \
-     <registry>/labhf:latest labhf-install-disk /dev/nvme0n1
+     ghcr.io/<owner>/labhf:latest labhf-install-disk /dev/nvme0n1
    ```
 4. Reboot. systemd-boot offers **"Enroll Secure Boot keys: labhf"**
    (`secure-boot-enroll manual`); pick it. The db includes Microsoft UEFI CA
    2011/2023 so the GPU option ROM still loads — don't drop them unless you
    know your GPU/NIC firmware is not MS-signed (no picture otherwise).
-5. Boot, type the temporary passphrase, run `labhf-enroll-tpm --wipe-password`.
-6. `labhf-setup-raid /dev/sda /dev/sdb /dev/sdc`.
+5. Boot, type the LUKS passphrase, run `labhf-enroll-tpm`. The passphrase
+   stays as the only fallback (there is no recovery key), so make it strong.
+6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
+   data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
+   new one (destroys the disks).
+7. k3s hostPaths outside `/media/*` need an SELinux label pods may use, e.g.
+   `sudo semanage fcontext -a -t container_file_t '/home/abi/compose(/.*)?' && sudo restorecon -R /home/abi/compose`.
 
-After a BIOS, GPU firmware or dbx update the TPM won't unlock: use the
-recovery key, then rerun `labhf-enroll-tpm`.
+After a BIOS, GPU firmware or dbx update the TPM won't unlock: type the
+LUKS passphrase, then rerun `labhf-enroll-tpm`.
 
 ## Open items / known risks
 
@@ -205,6 +313,17 @@ recovery key, then rerun `labhf-enroll-tpm`.
   key, which the Fedora kernel loads into `.platform` and accepts for modules
   under lockdown=integrity. `modprobe nvidia` → "No NVIDIA GPU found" in the VM;
   no shim/MOK needed. Re-check on the real PC (`lsmod | grep nvidia`).
+  Also verified with the split signing (akmods output unsigned, all 5 modules
+  signed in `nvidia-sign`), and a `bootc switch` + ESP systemd-boot from
+  `sdboot-sign` booting under Secure Boot with TPM unlock unchanged.
+- **Fresh install** (verified in QEMU, 80G disk): ESP 1G / root 40G / state
+  16G / public 23G; passphrase-only LUKS until `labhf-enroll-tpm`, then TPM2
+  unlocks unattended with the passphrase slot kept. networkd DHCP from the
+  image default, resolved stub DNS, boot ~14s. `labhf-setup-raid adopt` of an
+  existing array; a pod with hostPaths `/media/data` and `/home/public`
+  (→ `/media/public`) writes both, cluster DNS and egress work, SELinux
+  enforcing, no AVCs. Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and
+  the `nvidia-device-plugin` pod fail; expected.
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from

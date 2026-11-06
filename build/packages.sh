@@ -45,6 +45,7 @@ dnf -y install \
     cryptsetup tpm2-tools tpm2-tss openssl sudo \
     fsverity-utils dosfstools e2fsprogs mokutil \
     mdadm \
+    systemd-networkd wireguard-tools \
     container-selinux k3s-selinux \
     policycoreutils-python-utils setools-console audit \
     cage wlr-randr wpewebkit \
@@ -54,6 +55,26 @@ dnf -y install \
     "xorg-x11-drv-nvidia-${nvidia_evr}" \
     "xorg-x11-drv-nvidia-cuda-${nvidia_evr}" \
     /ctx/nvidia/kmod-nvidia-*.rpm
+
+# The kmod RPM is built unsigned (RPM Fusion's build never sees the db key);
+# the nvidia-sign stage signed its modules. Lay them over the RPM's files and
+# check that every module the RPM installed now carries our signature.
+kver=$(ls /usr/lib/modules)
+signer=$(cat /ctx/nvidia/signer)
+n=0
+for f in $(rpm -ql "kmod-nvidia-${kver}" | grep -E '\.ko(\.xz|\.zst)?$'); do
+    install -v -m 0644 "/ctx/nvidia/modules/${f#/}" "$f"
+    [[ $(modinfo -F signer "$f") == "$signer" ]] || { echo "unsigned module: $f" >&2; exit 1; }
+    n=$((n + 1))
+done
+(( n > 0 ))
+depmod -a "$kver"
+
+# systemd-networkd replaces NetworkManager: it only touches links a .network
+# file matches (k3s's cni0/flannel/veth stay alone), and wg0 is a plain .netdev
+dnf -y remove 'NetworkManager*'
+if rpm -qa | grep '^NetworkManager'; then echo 'NetworkManager still installed' >&2; exit 1; fi
+rpm -q systemd-networkd systemd-resolved bootc
 
 # The kmod must never be rebuilt on the host
 rpm -q akmod-nvidia && dnf -y remove akmod-nvidia akmods || true

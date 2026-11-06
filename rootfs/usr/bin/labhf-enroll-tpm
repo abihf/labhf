@@ -5,8 +5,9 @@
 #   7 Secure Boot state + signing cert, 15 must still be zero (initrd only).
 # No PCR 4/11 => bootc upgrades (new UKI, same signing key) keep unlocking.
 #
-# usage: labhf-enroll-tpm [--wipe-password]
-# Re-run after BIOS / GPU firmware / dbx updates (unlock with recovery key).
+# usage: labhf-enroll-tpm
+# The passphrase slot is kept on purpose: it is the only fallback (no recovery
+# key). Re-run after BIOS / GPU firmware / dbx updates (unlock with passphrase).
 set -euo pipefail
 
 PCRS=${LABHF_PCRS:-0+2+3+5+7}
@@ -31,10 +32,6 @@ systemd-cryptenroll "$dev" \
     --tpm2-device=auto \
     --tpm2-public-key= \
     --tpm2-pcrs="${PCRS}+15:sha256=${ZERO}"
-
-if [[ ${1:-} == --wipe-password ]]; then
-    systemd-cryptenroll "$dev" --wipe-slot=password
-fi
 
 systemd-cryptenroll "$dev"   # list key slots
 echo "OK. Reboot to test automatic unlock."

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Default: DHCP on every wired NIC, so a fresh install is reachable.
+# Machine-local files in /etc/systemd/network/ with a lower number (e.g.
+# 20-wired.network with a static Address=) win: the first match is used.
+# Only physical names: k3s's cni0, flannel.1 and veth* stay unmanaged.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
