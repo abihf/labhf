@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Install this image onto a disk:
-#   ESP (vfat) + root (ext4+verity, plain: image only) + state (LUKS2 ext4: /etc, /var)
-#   + public (plain ext4, /media/public)
+#   ESP (vfat) + root (ext4+verity, plain: image only) + state (LUKS2 ext4: /etc,
+#   /var incl. /home/public = /media/public)
 #
 # Runs from inside the image itself (same command for QEMU and the real PC):
 #   podman run --rm -it --privileged --pid=host --ipc=host \

@@ -8,7 +8,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0 |
-| Data | existing mdadm RAID5 (USB) → `/media/data`, NVMe partition `public` → `/media/public`; both unencrypted, labelled `container_file_t` for k3s hostPaths |
+| Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for k3s hostPaths |
 | Network | systemd-networkd + systemd-resolved (no NetworkManager, no LLMNR/mDNS); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
 | Firewall | own nftables table `inet labhf` next to k3s's rules: inbound only SSH + Traefik/NodePorts by default, pod/service IPs not reachable from outside; machine-local `/etc/labhf/firewall.d/*.nft` |
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
@@ -188,11 +188,10 @@ host port 6443, which the firewall now drops; add a local rule for
 p1 ESP    vfat 1G      signed systemd-boot + signed UKIs
 p2 root   ext4 40G     PLAIN: /composefs (image objects), /state = mount point
 p3 state  LUKS2 ext4   deploy/<id>/etc, os/default/var  -> /etc, /var, /home
-p4 public ext4         PLAIN: fast public data -> /media/public
 ```
 
-state and public split the space after root (equal weights, state capped at
-100G): ~98G each on the 256G NVMe.
+state takes all space after root (~215G on the 256G NVMe), including the fast
+shared data in `/home/public`.
 
 Data mounts (`/media` is a real directory on the sealed root, not Fedora's
 `run/media` symlink, so a missing disk means read-only errors, never writes
@@ -200,12 +199,15 @@ into RAM or onto the state volume):
 
 | Mount | Source | Set up by | If missing |
 |---|---|---|---|
-| `/media/public` | NVMe `public` (by partlabel) | `media-public.mount` (image) | boots; k3s starts, writes fail (EROFS) |
+| `/media/public` | symlink → `/home/public` (encrypted state volume) | image (symlink), tmpfiles (directory) | always there |
 | `/media/data` | mdadm array, fstab by UUID | `labhf-setup-raid adopt` (machine `/etc/fstab`) | boots (`nofail`); **k3s stays down** (`x-systemd.required-by`), so media apps never see an empty library |
 | `/media/backup` | backup disk, fstab by UUID | by hand (fstab, e.g. `x-systemd.automount`) | |
 
-Both mounts use `context=system_u:object_r:container_file_t:s0`: with SELinux
-enforcing, k3s pods may use them through hostPath, and 11T never needs relabelling.
+The RAID is mounted with `context=system_u:object_r:container_file_t:s0`, so
+with SELinux enforcing k3s pods may use it through hostPath and 11T never needs
+relabelling. `/home/public` gets the same type from an fcontext rule the image
+ships (`semanage fcontext -l -C`); after copying data in, run
+`sudo restorecon -R /home/public`.
 
 `sysroot-state.mount` mounts p3 twice: in the initrd (bootc-root-setup.service
 requires it, so `/etc` and `/var` always come from the encrypted volume) and in
@@ -302,8 +304,7 @@ machine a read-only token in `/etc/ostree/auth.json`
 
 ## Installing on the real PC
 
-`labhf-install-disk` **wipes the whole target disk** (ESP, root, state,
-public). Back up anything on it first, and unplug data disks you want to keep
+`labhf-install-disk` **wipes the whole target disk** (ESP, root, state). Back up anything on it first, and unplug data disks you want to keep
 so it can only see the target. Machine-specific notes (e.g. migrating an
 existing install) belong in a git-ignored `MIGRATION.md`.
 
@@ -351,14 +352,17 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
   Also verified with the split signing (akmods output unsigned, all 5 modules
   signed in `nvidia-sign`), and a `bootc switch` + ESP systemd-boot from
   `sdboot-sign` booting under Secure Boot with TPM unlock unchanged.
-- **Fresh install** (verified in QEMU, 80G disk): ESP 1G / root 40G / state
-  16G / public 23G; passphrase-only LUKS until `labhf-enroll-tpm`, then TPM2
+- **Fresh install** (verified in QEMU, 80G disk; then with a separate `public`
+  partition, since folded into state): ESP 1G / root 40G / state; passphrase-only LUKS until `labhf-enroll-tpm`, then TPM2
   unlocks unattended with the passphrase slot kept. networkd DHCP from the
   image default, resolved stub DNS, boot ~14s. `labhf-setup-raid adopt` of an
   existing array; a pod with hostPaths `/media/data` and `/home/public`
   (→ `/media/public`) writes both, cluster DNS and egress work, SELinux
   enforcing, no AVCs. Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and
   the `nvidia-device-plugin` pod fail; expected.
+- **`/home/public` on state** (verified in QEMU, fresh install, 3 partitions):
+  a pod with hostPaths `/media/public` (symlink) and `/media/data` writes
+  both, new files are `container_file_t`, `abi` owns `/home/public`, no AVCs.
 - **Firewall with k3s** (verified in QEMU): from an untrusted client (veth +
   netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed;
   pods keep cluster + external DNS, egress, the API server and metrics-server

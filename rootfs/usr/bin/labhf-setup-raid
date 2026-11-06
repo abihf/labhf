@@ -20,7 +20,7 @@ opts+=",x-systemd.required-by=k3s.service,context=system_u:object_r:container_fi
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 (( EUID == 0 )) || die "run as root"
-[[ -d $mountpoint && ! -L /media ]] || die "$mountpoint is not a directory on this image (needs an image with /media/{data,public,backup})"
+[[ -d $mountpoint && ! -L /media ]] || die "$mountpoint is not a directory on this image (needs an image with /media/{data,backup})"
 
 record_array() {  # $1 = md device
     local md=$1 uuid

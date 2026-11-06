@@ -14,8 +14,7 @@ systemctl enable \
     k3s.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
-    sysroot-state.mount \
-    media-public.mount
+    sysroot-state.mount
 systemctl set-default multi-user.target
 # DNS from networkd (DNS= / DHCP) goes through resolved's stub
 ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
@@ -41,13 +40,23 @@ dracut --force --kver "$kver" "/usr/lib/modules/${kver}/initramfs.img"
 lsinitrd "/usr/lib/modules/${kver}/initramfs.img" | grep -E 'bootc|systemd-cryptsetup|libtss2-esys|sysroot-state|crypttab' | head -20
 lsinitrd -f /etc/crypttab "/usr/lib/modules/${kver}/initramfs.img"
 
-# --- data mount points --------------------------------------------------------
+# --- data mount points ---
 # /media is a symlink to run/media (tmpfs) in Fedora. Make the mount points real
 # directories on the sealed, read-only root: if a disk is missing, writes to it
-# fail (EROFS) instead of filling RAM. Mounted by media-public.mount and by
-# machine-local fstab entries (labhf-setup-raid: /media/data; backup disk).
+# fail (EROFS) instead of filling RAM. Mounted by machine-local fstab entries
+# (labhf-setup-raid: /media/data; backup disk).
 rm -f /media
-mkdir -p /media/data /media/public /media/backup
+mkdir -p /media/data /media/backup
+# /media/public: fast shared data, on the encrypted state volume
+ln -s /home/public /media/public
+
+# pods (k3s hostPath) may read/write /home/public; the policy maps /home to
+# /var/home, so one rule covers both. Stored in /etc/selinux (store-root),
+# i.e. it ships in the image and survives local `semanage fcontext -a`.
+semanage fcontext -a -t container_file_t '/var/home/public(/.*)?'
+for p in /home/public /var/home/public /home/public/x; do
+    [[ $(matchpathcon -n "$p") == *:container_file_t:* ]] || { echo "bad label for $p: $(matchpathcon -n "$p")" >&2; exit 1; }
+done
 
 # --- scrub state that must not be sealed -------------------------------------
 # keep /ostree -> sysroot/ostree (bootc lint baseimage-root requires it)

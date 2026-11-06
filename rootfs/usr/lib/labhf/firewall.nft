@@ -51,6 +51,8 @@ table inet labhf {
         tcp dport @tcp_open accept
         udp dport @udp_open accept
         jump local_input
+        # unanswered multicast/broadcast (mDNS, SSDP, ...): drop without a log line
+        meta pkttype { broadcast, multicast } drop
         limit rate 6/minute burst 10 packets log prefix "labhf-fw in drop: " level info
     }
     chain local_input {
