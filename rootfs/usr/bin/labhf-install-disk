@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install this image onto a disk:
 #   ESP (vfat) + root (ext4+verity, plain: image only) + state (LUKS2 ext4: /etc, /var)
 #

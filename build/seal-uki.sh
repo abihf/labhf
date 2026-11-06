@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Compute the composefs digest of /target and build a signed UKI with it.
 # Kernel arguments come from /target/usr/lib/bootc/kargs.d/*.toml.
 set -euxo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the NVIDIA *open* kernel module for the image's kernel with akmods
 # (RPM Fusion) and sign it with our Secure Boot db key.
 # Output: /out/*.rpm (kmod package) and /out/nvidia-version (EVR to pin userspace)

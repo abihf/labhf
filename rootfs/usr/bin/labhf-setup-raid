@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Create an (unencrypted) RAID5 data array and mount it at /srv/data.
 #   mdadm RAID5 -> ext4
 # usage: labhf-setup-raid /dev/sdX /dev/sdY /dev/sdZ [...]

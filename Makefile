@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # labhf — build, test in QEMU, install.
 # Host needs: podman (rootful via sudo), qemu, swtpm, make.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Host-side helper tools (key generation, OVMF vars) so the host only needs
 # podman + qemu + swtpm.
 ARG FEDORA=45

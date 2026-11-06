@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # labhf — sealed bootc image for the homelab PC
 #
 # Fedora bootc + composefs backend + signed UKI ("sealed image").

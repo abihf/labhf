@@ -190,3 +190,12 @@ recovery key, then rerun `labhf-enroll-tpm`.
   automatic rollback yet.
 - Kernel args are fixed in the signed UKI; change them in
   `rootfs/usr/lib/bootc/kargs.d/` and rebuild.
+
+## License
+
+Copyright (C) 2026 Abi Hafshin. Licensed under the GNU General Public License
+v3.0 or later ([LICENSE](LICENSE), `SPDX-License-Identifier: GPL-3.0-or-later`).
+This covers the files in this repository. The built image also contains Fedora,
+RPM Fusion, NVIDIA, k3s and other packages under their own licenses (an
+aggregate in GPL-3.0 terms); publishing the image means meeting those licenses
+too (e.g. corresponding source for GPL packages, NVIDIA's driver license).

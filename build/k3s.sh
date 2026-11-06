@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install the upstream k3s static binary (pinned + checksummed).
 set -euxo pipefail
 

@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Bind the LUKS state volume (/etc, /var) to the TPM with a literal PCR policy:
 #   0 firmware, 2 option ROMs, 3 option ROM config, 5 GPT/boot config,
 #   7 Secure Boot state + signing cert, 15 must still be zero (initrd only).

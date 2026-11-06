@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Kiosk session for gui.service: pick the display GPU, then cage + MiniBrowser.
 #
 # The PC has two GPUs: the integrated AMD (drives the screen) and the NVIDIA

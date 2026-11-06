@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install everything from upstream binary repos.
 set -euxo pipefail
 

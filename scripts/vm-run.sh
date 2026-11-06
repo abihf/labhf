@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Boot vm/disk.raw: q35 + SMM, Secure Boot OVMF with our keys, swtpm TPM 2.0,
 # 3 extra disks for RAID5 testing. ssh: `ssh -p 2222 root@localhost`.
 set -euo pipefail

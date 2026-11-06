@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Create OVMF vars with our PK/KEK/db enrolled and Secure Boot on (tools container).
 # Fedora's TPM-enabled firmware is the 4M build, shipped as qcow2 only (the raw
 # 2M OVMF_CODE.secboot.fd has no TPM support: PCRs stay zero, no event log).

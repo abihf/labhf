@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install the image into vm/disk.raw through a loop device (needs root podman).
 set -euo pipefail
 : "${PODMAN:=podman}" "${IMAGE:?}" "${DISK_SIZE:=80G}"
