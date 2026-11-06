@@ -1,0 +1,75 @@
+#!/usr/sbin/nft -f
+# SPDX-License-Identifier: GPL-3.0-or-later
+# labhf host firewall: one nftables table, loaded by labhf-firewall.service.
+#
+# Lives next to k3s's own rules (kube-proxy, flannel, kube-router write
+# iptables-nft tables): this file only ever replaces `table inet labhf`,
+# never the whole ruleset, so reloading it can't break pod networking.
+#
+# Machine-local additions: /etc/labhf/firewall.d/*.nft, loaded at the end of
+# the same transaction, e.g.
+#   add element inet labhf tcp_open { 445 }          # samba
+#   add element inet labhf udp_open { 67, 51820 }    # kea dhcp, wireguard
+#   add element inet labhf trusted_ifs { "wg0" }     # VPN peers: everything
+#   add rule inet labhf local_input ip saddr 192.0.2.0/24 tcp dport 6443 accept
+# then `sudo systemctl reload labhf-firewall`.
+
+destroy table inet labhf
+
+table inet labhf {
+    # open to everyone who can reach the box
+    set tcp_open {
+        type inet_service; flags interval
+        elements = { 22 }
+    }
+    set udp_open {
+        type inet_service; flags interval
+    }
+
+    # interfaces whose traffic is fully trusted: the host itself and k3s pods
+    # (pods reach the API server through 10.43.0.1 -> node:6443, metrics-server
+    # the kubelet on :10250, CoreDNS the host's upstream DNS)
+    set trusted_ifs {
+        type ifname
+        elements = { "lo", "cni0", "flannel.1" }
+    }
+
+    # k3s cluster and service CIDRs: never reachable directly from outside
+    set k8s_v4 {
+        type ipv4_addr; flags interval
+        elements = { 10.42.0.0/16, 10.43.0.0/16 }
+    }
+
+    chain input {
+        type filter hook input priority filter + 10; policy drop;
+        ct state established,related accept
+        ct state invalid drop
+        iifname @trusted_ifs accept
+        meta l4proto { icmp, ipv6-icmp } accept
+        # DHCPv6 replies (DHCPv4 clients use packet sockets, before netfilter)
+        ip6 saddr fe80::/10 udp dport 546 accept
+        tcp dport @tcp_open accept
+        udp dport @udp_open accept
+        jump local_input
+        limit rate 6/minute burst 10 packets log prefix "labhf-fw in drop: " level info
+    }
+    chain local_input {
+    }
+
+    chain forward {
+        type filter hook forward priority filter + 10; policy accept;
+        ct state established,related accept
+        iifname @trusted_ifs accept
+        # from outside, pod and service IPs are off limits, also after
+        # kube-proxy has DNATed a service IP to a pod (hence "original")
+        ct original ip daddr @k8s_v4 counter drop
+        # Traefik (svclb hostPorts) and NodePorts: host address DNATed to a pod
+        ct status dnat accept
+        jump local_forward
+        # everything else is routed as before (e.g. LAN <-> VPN)
+    }
+    chain local_forward {
+    }
+}
+
+include "/etc/labhf/firewall.d/*.nft"

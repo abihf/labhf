@@ -10,6 +10,7 @@ systemctl enable \
     sshd.service \
     systemd-networkd.service \
     systemd-resolved.service \
+    labhf-firewall.service \
     k3s.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \

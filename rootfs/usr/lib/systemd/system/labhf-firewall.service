@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Not Fedora's nftables.service: that one runs `nft flush ruleset` on stop and
+# reload, which also deletes k3s's NAT/forwarding rules.
+[Unit]
+Description=labhf host firewall (nftables table inet labhf)
+Documentation=file:/usr/lib/labhf/firewall.nft
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target k3s.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=nft -f /usr/lib/labhf/firewall.nft
+ExecReload=nft -f /usr/lib/labhf/firewall.nft
+ExecStop=nft destroy table inet labhf
+
+[Install]
+WantedBy=multi-user.target

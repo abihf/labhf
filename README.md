@@ -9,7 +9,8 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0 |
 | Data | existing mdadm RAID5 (USB) → `/media/data`, NVMe partition `public` → `/media/public`; both unencrypted, labelled `container_file_t` for k3s hostPaths |
-| Network | systemd-networkd + systemd-resolved (no NetworkManager); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
+| Network | systemd-networkd + systemd-resolved (no NetworkManager, no LLMNR/mDNS); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
+| Firewall | own nftables table `inet labhf` next to k3s's rules: inbound only SSH + Traefik/NodePorts by default, pod/service IPs not reachable from outside; machine-local `/etc/labhf/firewall.d/*.nft` |
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
@@ -146,6 +147,40 @@ Address=10.0.0.1/24
 
 `sudo networkctl reload && sudo wg show`. `wg-quick@wg0` with
 `/etc/wireguard/wg0.conf` also works; use one or the other for an interface.
+
+### Firewall
+
+`labhf-firewall.service` loads [`/usr/lib/labhf/firewall.nft`](rootfs/usr/lib/labhf/firewall.nft)
+into its own table, `inet labhf`. It only ever replaces that table, never the
+whole ruleset: k3s's kube-proxy / flannel / network-policy rules live in their
+own iptables-nft tables, and Fedora's `nftables.service` (not used) would
+delete them on stop or reload with `nft flush ruleset`.
+
+| | Default |
+|---|---|
+| Input | established, loopback, k3s pods (`cni0`, `flannel.1`), ICMP/ICMPv6, DHCPv6 replies, **TCP 22**; everything else dropped (rate-limited log `labhf-fw in drop:`) |
+| Forward | established, pods, Traefik / NodePorts (DNAT from a host address); new connections from outside to pod or service IPs (10.42/16, 10.43/16) dropped, also after kube-proxy's DNAT; all other routing (e.g. LAN ↔ VPN) unchanged |
+| Output | untouched |
+
+So the k3s API (6443) and kubelet (10250) are reachable from the host and
+from pods only: use `kubectl` over ssh, or open 6443 for one subnet. Open
+ports and rules per machine in `/etc/labhf/firewall.d/*.nft` (loaded in the
+same transaction, after the base table):
+
+```nft
+# /etc/labhf/firewall.d/50-local.nft
+add element inet labhf tcp_open { 445 }               # samba
+add element inet labhf udp_open { 67, 51820 }         # DHCP server, WireGuard
+add element inet labhf trusted_ifs { "wg0" }          # VPN peers: like the host itself
+add rule inet labhf local_input ip saddr 192.0.2.0/24 tcp dport 6443 accept
+```
+
+`sudo systemctl reload labhf-firewall` applies changes; `sudo nft list table
+inet labhf` shows the result. If the file has a syntax error the unit fails
+and the previous table stays loaded (at boot: no table, i.e. no filtering);
+check with `sudo nft -c -f /usr/lib/labhf/firewall.nft`. The QEMU VM forwards
+host port 6443, which the firewall now drops; add a local rule for
+`ip saddr 10.0.2.2` to use it.
 
 ## Disk layout
 
@@ -324,6 +359,12 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
   (→ `/media/public`) writes both, cluster DNS and egress work, SELinux
   enforcing, no AVCs. Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and
   the `nvidia-device-plugin` pod fail; expected.
+- **Firewall with k3s** (verified in QEMU): from an untrusted client (veth +
+  netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed;
+  pods keep cluster + external DNS, egress, the API server and metrics-server
+  → kubelet; k3s's own rules unchanged by start, reload and stop; no AVCs.
+  Right after boot Traefik's ports answer only once k3s has written its
+  rules (as without the firewall).
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
