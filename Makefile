@@ -9,6 +9,8 @@ TOOLS_IMAGE ?= localhost/labhf-tools:latest
 REGISTRY    ?= localhost:5000
 VM_REGISTRY ?= 10.0.2.2:5000
 FEDORA      ?= 45
+# extra `podman build` flags, e.g. --label ... (CI)
+BUILD_ARGS  ?=
 SSH_PUBKEY  ?= $(shell cat $(firstword $(wildcard $(HOME)/.ssh/id_ed25519.pub $(HOME)/.ssh/id_ecdsa.pub $(HOME)/.ssh/id_rsa.pub)) 2>/dev/null)
 
 TOOLS_RUN = $(PODMAN) run --rm -u $(shell id -u):$(shell id -g) \
@@ -40,6 +42,7 @@ build: keys/db.key
 	  --secret id=sb_key,src=keys/db.key \
 	  --secret id=sb_cert,src=keys/db.crt \
 	  --security-opt label=disable \
+	  $(BUILD_ARGS) \
 	  -t $(IMAGE) -f Containerfile .
 
 vm/OVMF_VARS.qcow2: keys/db.key

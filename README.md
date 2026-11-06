@@ -24,7 +24,8 @@ rootfs/                files copied into the image
   usr/lib/bootc/kargs.d/      kernel args → baked into the signed UKI
   usr/lib/labhf/repart.d/     disk layout for the installer
   usr/bin/labhf-*             install-disk, enroll-tpm, setup-raid
-scripts/               host scripts (keys, OVMF vars, QEMU)
+scripts/               host scripts (keys, OVMF vars, QEMU, CI build)
+.github/workflows/     CI: build + push to ghcr.io
 keys/                  Secure Boot keys (git-ignored, back them up!)
 vm/                    QEMU disks, firmware vars, swtpm state (git-ignored)
 ```
@@ -137,6 +138,34 @@ sudo bootc switch 10.0.2.2:5000/labhf:latest && sudo reboot
 
 After that: `make build push` on the host, `sudo bootc upgrade && sudo reboot`
 in the VM. `sudo bootc rollback && sudo reboot` returns to the previous image.
+
+### CI: GitHub Actions → ghcr.io
+
+[`.github/workflows/image.yml`](.github/workflows/image.yml) builds the sealed
+image on every push to `main`, weekly (Fedora/NVIDIA updates) and on demand,
+and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
+`make build` inside `quay.io/podman/stable` (a current podman, like local
+builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
+and fails if the db key turns up anywhere in the image.
+
+Signing needs three repository secrets. Only the **db** key goes to GitHub;
+`PK.key`/`KEK.key` stay offline:
+
+```bash
+gh secret set SB_DB_KEY < keys/db.key
+gh secret set SB_DB_CRT < keys/db.crt
+tar -C keys -cz auth | base64 -w0 | gh secret set SB_AUTH_TGZ   # public .auth files
+```
+
+Anyone with write access to the repo's workflows can use the db key, and an
+image signed with it boots on the PC: keep the repo's collaborators and
+Actions settings tight. Pull requests are never built with the secrets.
+
+Point the PC at it with `sudo bootc switch ghcr.io/<owner>/labhf:latest`. New
+ghcr packages are **private**: either make the package public (it then
+redistributes NVIDIA and GPL binaries, see [License](#license)) or give the
+machine a read-only token in `/etc/ostree/auth.json`
+(`{"auths":{"ghcr.io":{"auth":"<base64 user:PAT with read:packages>"}}}`, mode 0600).
 
 ## Installing on the real PC
 

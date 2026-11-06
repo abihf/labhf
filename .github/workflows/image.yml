@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Build the sealed labhf image and push it to ghcr.io/<owner>/labhf.
+#
+# Repository secrets (see README "CI: GitHub Actions"):
+#   SB_DB_KEY    keys/db.key  (Secure Boot db private key; PK/KEK stay offline)
+#   SB_DB_CRT    keys/db.crt
+#   SB_AUTH_TGZ  base64 tar.gz of keys/auth/ (public PK/KEK/db .auth files)
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'LICENSE']
+  schedule:
+    - cron: '23 3 * * 1'   # weekly rebuild: Fedora, NVIDIA and security updates
+  workflow_dispatch:
+  # No pull_request trigger: fork PRs get no secrets, and the db key must never
+  # be exposed to code from a PR.
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          sudo docker image prune -af >/dev/null
+          df -h / /mnt
+
+      - name: Restore Secure Boot signing material
+        env:
+          SB_DB_KEY: ${{ secrets.SB_DB_KEY }}
+          SB_DB_CRT: ${{ secrets.SB_DB_CRT }}
+          SB_AUTH_TGZ: ${{ secrets.SB_AUTH_TGZ }}
+        run: |
+          for v in SB_DB_KEY SB_DB_CRT SB_AUTH_TGZ; do
+            [[ -n ${!v} ]] || { echo "::error::repository secret $v is not set"; exit 1; }
+          done
+          umask 077
+          mkdir -p keys
+          printf '%s\n' "$SB_DB_KEY" > keys/db.key
+          printf '%s\n' "$SB_DB_CRT" > keys/db.crt
+          base64 -d <<<"$SB_AUTH_TGZ" | tar -xz -C keys
+          ls keys/auth/PK.auth keys/auth/KEK.auth keys/auth/db.auth >/dev/null
+          # key and certificate must belong together
+          [[ $(openssl x509 -in keys/db.crt -noout -pubkey | sha256sum) == \
+             $(openssl pkey -in keys/db.key -pubout | sha256sum) ]] \
+            || { echo "::error::SB_DB_KEY does not match SB_DB_CRT"; exit 1; }
+          openssl x509 -in keys/db.crt -noout -subject -enddate
+
+      - name: Compute tags
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/labhf"
+          tags="sha-${GITHUB_SHA::7}"
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            tags+=" latest $(date -u +%Y%m%d)"
+          else
+            branch=${GITHUB_REF_NAME//[^a-zA-Z0-9_.-]/-}
+            tags+=" ${branch,,}"
+          fi
+          echo "IMAGE_REPO=$repo" >> "$GITHUB_ENV"
+          echo "TAGS=$tags" >> "$GITHUB_ENV"
+          echo "Pushing $repo: $tags"
+
+      - name: Build and push
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_LABELS: >-
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            --label org.opencontainers.image.revision=${{ github.sha }}
+            --label org.opencontainers.image.licenses=GPL-3.0-or-later
+        run: |
+          sudo mkdir -p /mnt/containers
+          sudo docker run --rm --privileged \
+            -v "$PWD:/src" -w /src \
+            -v /mnt/containers:/var/lib/containers \
+            -e IMAGE_REPO -e TAGS -e REGISTRY_USER -e REGISTRY_TOKEN -e BUILD_LABELS \
+            quay.io/podman/stable:latest \
+            bash scripts/ci-build.sh
+
+      - name: Remove signing material
+        if: always()
+        run: rm -rf keys
