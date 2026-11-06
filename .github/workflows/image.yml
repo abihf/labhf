@@ -86,7 +86,8 @@ jobs:
             --label org.opencontainers.image.licenses=GPL-3.0-or-later
         run: |
           sudo mkdir -p /mnt/containers
-          sudo docker run --rm --privileged \
+          # no sudo: it would drop the env that the bare `-e VAR` flags forward
+          docker run --rm --privileged \
             -v "$PWD:/src" -w /src \
             -v /mnt/containers:/var/lib/containers \
             -e IMAGE_REPO -e TAGS -e REGISTRY_USER -e REGISTRY_TOKEN -e BUILD_LABELS \
