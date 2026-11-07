@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Seal the chunked image (second half of `make build`, see Containerfile):
+# compute the composefs digest over exactly the layers that ship, build and
+# sign the UKI, add it as the last layer. The digest must be computed after
+# chunking: chunkah may change mtimes, and mtimes are part of the composefs
+# metadata.
+ARG FEDORA=45
+ARG BASE=quay.io/fedora/fedora-bootc:${FEDORA}
+ARG CHUNKED=localhost/labhf-chunked:build
+
+FROM ${CHUNKED} AS chunked
+
+FROM ${BASE} AS signer
+RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
+    dnf -y --setopt=keepcache=True install systemd-ukify sbsigntools
+
+FROM signer AS sealer
+ARG SB_CERT_SHA256
+RUN --network=none \
+    --mount=type=bind,from=chunked,target=/target \
+    --mount=type=bind,source=build,target=/ctx/build \
+    --mount=type=secret,id=sb_key \
+    --mount=type=secret,id=sb_cert \
+    --mount=type=tmpfs,target=/tmp \
+    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
+    /ctx/build/seal-uki.sh
+
+FROM chunked
+COPY --from=sealer /out/boot /boot
+LABEL containers.bootc=1
+LABEL org.opencontainers.image.title="labhf"
+LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: k3s, NVIDIA, mdadm, cage+WPE kiosk"
+ENV container=oci
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

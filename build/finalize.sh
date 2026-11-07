@@ -11,6 +11,7 @@ systemctl enable \
     systemd-networkd.service \
     systemd-resolved.service \
     labhf-firewall.service \
+    gui.service \
     k3s.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \

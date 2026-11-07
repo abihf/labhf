@@ -9,8 +9,21 @@ TOOLS_IMAGE ?= localhost/labhf-tools:latest
 REGISTRY    ?= localhost:5000
 VM_REGISTRY ?= 10.0.2.2:5000
 FEDORA      ?= 45
-# extra `podman build` flags, e.g. --label ... (CI)
+# extra `podman build` flags for the final (sealed) image, e.g. --label ... (CI)
 BUILD_ARGS  ?=
+# chunkah splits the flat tree into content-based layers (pinned by digest)
+CHUNKAH_IMAGE ?= quay.io/coreos/chunkah:v0.7.1@sha256:71e593421c5de7dcc7c8c5c50e98d3bac572055a76f399f61a491d123c20a523
+TREE_IMAGE    ?= localhost/labhf-tree:build
+CHUNKED_IMAGE ?= localhost/labhf-chunked:build
+# mtimes newer than this are clamped, so a rebuild of the same commit gives
+# the same layers (generated files would otherwise change every build)
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || date +%s)
+PUSH_ARGS   ?= --compression-format zstd
+# e.g. --no-cache: rebuild everything, as CI does on a fresh runner
+TREE_BUILD_FLAGS ?=
+
+SHELL       := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
 SSH_PUBKEY  ?= $(shell cat $(firstword $(wildcard $(HOME)/.ssh/id_ed25519.pub $(HOME)/.ssh/id_ecdsa.pub $(HOME)/.ssh/id_rsa.pub)) 2>/dev/null)
 
 TOOLS_RUN = $(PODMAN) run --rm -u $(shell id -u):$(shell id -g) \
@@ -41,15 +54,28 @@ keys: keys/db.key
 import-sbctl:
 	$(TOOLS_RUN) bash /work/scripts/import-sbctl.sh
 
+SIGN_ARGS = --secret id=sb_key,src=keys/db.key --secret id=sb_cert,src=keys/db.crt \
+            --build-arg SB_CERT_SHA256=$$(sha256sum < keys/db.crt | cut -c1-64)
+
+# 1. flat tree (packages, signed modules + systemd-boot)
+# 2. chunkah: content-based layers; no network, no keys, only the tree mounted.
+#    /sysroot/ is emptied: the base image's ostree repo (2G) is unused with composefs
+# 3. seal: composefs digest + signed UKI over the chunked layers
 build: keys/db.key
-	$(PODMAN) build \
-	  --build-arg FEDORA=$(FEDORA) \
-	  --secret id=sb_key,src=keys/db.key \
-	  --secret id=sb_cert,src=keys/db.crt \
-	  --build-arg SB_CERT_SHA256=$$(sha256sum < keys/db.crt | cut -c1-64) \
+	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --security-opt label=disable \
+	  $(TREE_BUILD_FLAGS) --target tree -t $(TREE_IMAGE) -f Containerfile .
+	$(PODMAN) run --rm --network=none --security-opt label=disable \
+	  --mount=type=image,src=$(TREE_IMAGE),dest=/chunkah \
+	  -e SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  $(CHUNKAH_IMAGE) build --max-layers 128 --prune /sysroot/ -t $(CHUNKED_IMAGE) \
+	  | $(PODMAN) load
+	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --build-arg CHUNKED=$(CHUNKED_IMAGE) \
 	  --security-opt label=disable \
 	  $(BUILD_ARGS) \
-	  -t $(IMAGE) -f Containerfile .
+	  -t $(IMAGE) -f Containerfile.seal .
+	@echo "layers: $$($(PODMAN) inspect --format '{{len .RootFS.Layers}}' $(IMAGE))"
 
 vm/OVMF_VARS.qcow2: keys/db.key
 	mkdir -p vm
@@ -86,4 +112,4 @@ registry:
 	$(PODMAN) start labhf-registry
 
 push: registry
-	$(PODMAN) push --tls-verify=false $(IMAGE) docker://$(REGISTRY)/labhf:latest
+	$(PODMAN) push --tls-verify=false $(PUSH_ARGS) $(IMAGE) docker://$(REGISTRY)/labhf:latest

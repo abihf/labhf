@@ -3,8 +3,12 @@
 # Install everything from upstream binary repos.
 set -euxo pipefail
 
-# Keep downloaded RPMs in the build cache mount (/var/cache/libdnf5)
-dnf() { command dnf --setopt=keepcache=True "$@"; }
+# Keep downloaded RPMs in the build cache mount (/var/cache/libdnf5); skip
+# %doc files (licenses are %license and stay: the image is redistributed)
+dnf() { command dnf --setopt=keepcache=True --setopt=tsflags=nodocs "$@"; }
+
+# Only English translations from here on (base image files: see below)
+echo '%_install_langs C.utf8:en:en_US:en_GB' > /etc/rpm/macros.image-language-conf
 
 fedver=$(rpm -E %fedora)
 
@@ -49,7 +53,7 @@ dnf -y install \
     container-selinux k3s-selinux \
     policycoreutils-python-utils setools-console audit \
     cage wlr-randr wpewebkit \
-    mesa-dri-drivers mesa-vulkan-drivers \
+    mesa-dri-drivers \
     google-noto-sans-fonts google-noto-emoji-fonts \
     nvidia-container-toolkit \
     "xorg-x11-drv-nvidia-${nvidia_evr}" \
@@ -64,6 +68,8 @@ signer=$(cat /ctx/nvidia/signer)
 n=0
 for f in $(rpm -ql "kmod-nvidia-${kver}" | grep -E '\.ko(\.xz|\.zst)?$'); do
     install -v -m 0644 "/ctx/nvidia/modules/${f#/}" "$f"
+    # fixed mtime, so unchanged modules keep their layer (see k3s.sh)
+    touch -d @0 "$f"
     [[ $(modinfo -F signer "$f") == "$signer" ]] || { echo "unsigned module: $f" >&2; exit 1; }
     n=$((n + 1))
 done
@@ -75,6 +81,39 @@ depmod -a "$kver"
 dnf -y remove 'NetworkManager*'
 if rpm -qa | grep '^NetworkManager'; then echo 'NetworkManager still installed' >&2; exit 1; fi
 rpm -q systemd-networkd systemd-resolved bootc
+
+# --- strip what this machine never uses --------------------------------------
+# Whole packages via dnf, so the rpmdb (and chunkah's per-package layers) stay
+# accurate. All leaves or only weakly wanted; the check below fails the build
+# if a removal ever drags in something that matters.
+strip_pkgs=(
+    'qemu-user-static*'                        # foreign-arch containers (175M)
+    python3-boto3 python3-botocore python3-s3transfer   # AWS SDK (125M)
+    nvidia-gpu-firmware                        # nouveau firmware; blacklisted (101M)
+    atheros-firmware mt7xxx-firmware brcmfmac-firmware tiwilink-firmware
+    nxpwireless-firmware qcom-wwan-firmware    # Wi-Fi / WWAN chips (~95M)
+    intel-gpu-firmware intel-npu-firmware intel-audio-firmware cirrus-audio-firmware
+    microcode_ctl                              # Intel CPU microcode (AMD here)
+    intel-mediasdk                             # Intel video (libvpl weak dep)
+    mesa-vulkan-drivers                        # weak dep; cage/WPE render with GL (174M)
+    # not flite (WebKit's speech synthesis) or x265-libs (libheif-freeworld):
+    # removing either takes wpewebkit with it
+)
+mapfile -t present < <(rpm -qa --qf '%{NAME}\n' "${strip_pkgs[@]}" | sort -u)
+(( ${#present[@]} )) && dnf -y remove "${present[@]}"
+keep=(kernel-core bootc skopeo podman wpewebkit cage mesa-dri-drivers llvm-libs
+      linux-firmware amd-gpu-firmware amd-ucode-firmware realtek-firmware
+      xorg-x11-drv-nvidia xorg-x11-drv-nvidia-cuda-libs nvidia-container-toolkit
+      container-selinux k3s-selinux systemd-networkd)
+rpm -q "${keep[@]}"
+if rpm -qa 'qemu-user-static*' python3-botocore nvidia-gpu-firmware | grep .; then
+    echo "strip list not removed" >&2; exit 1
+fi
+
+# docs and translations the base image already shipped (ours are skipped by
+# tsflags=nodocs and _install_langs above). rpm -V reports them as missing.
+rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
+find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en' ! -name 'en_*' -exec rm -rf {} +
 
 # The kmod must never be rebuilt on the host
 rpm -q akmod-nvidia && dnf -y remove akmod-nvidia akmods || true

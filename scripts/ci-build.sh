@@ -21,6 +21,7 @@ fi
 
 podman login ghcr.io -u "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_TOKEN"
 for tag in $TAGS; do
-    podman push localhost/labhf:ci "docker://${IMAGE_REPO}:${tag}"
+    # zstd: smaller than gzip; bootc pulls it (plain zstd, not zstd:chunked)
+    podman push --compression-format zstd localhost/labhf:ci "docker://${IMAGE_REPO}:${tag}"
 done
 podman logout ghcr.io

@@ -13,12 +13,17 @@
 #   rootfs        packages, config overlay, initramfs
 #   signer        base + systemd-ukify (sbsign/ukify), the only signing tools
 #   sdboot-sign   signs rootfs's systemd-boot
-#   tree          rootfs + signed systemd-boot (what gets sealed)
-#   sealer        computes composefs digest, builds + signs the UKI
-#   final         tree + /boot/EFI/Linux/<kver>.efi
+#   tree          rootfs + signed systemd-boot, flat (the last stage here)
+# then, in `make build`:
+#   chunkah       splits tree into up to 128 layers by package (offline, no keys)
+#   Containerfile.seal: composefs digest + signed UKI over the split image,
+#                 final = split layers + /boot/EFI/Linux/<kver>.efi
+# Layers then only change with their packages, so `bootc upgrade` downloads
+# the changed ones instead of the whole image (bootc has no partial pulls).
 #
 # The db key (build secret sb_key) is mounted ONLY in --network=none steps of
-# stages built from the clean Fedora base: nvidia-sign, sdboot-sign, sealer.
+# stages built from the clean Fedora base: nvidia-sign, sdboot-sign, sealer
+# (Containerfile.seal).
 # Steps that run third-party code (RPM Fusion, COPR, NVIDIA, k3s, dracut
 # modules of installed packages) never see it, so they can neither send it
 # anywhere nor hide it in the image.
@@ -112,29 +117,8 @@ RUN --network=none \
     cp /out/systemd-bootx64.efi.signed /out/systemd-bootx64.efi
 
 # ---------------------------------------------------------------------------
-# Fixed, flattened input for the composefs digest.
+# The unsealed image as one flat tree. `make build` then splits it into
+# content-based layers (chunkah) and seals that (Containerfile.seal).
 FROM scratch AS tree
 COPY --from=rootfs / /
 COPY --from=sdboot-sign /out/ /usr/lib/systemd/boot/efi/
-
-# ---------------------------------------------------------------------------
-FROM signer AS sealer
-ARG SB_CERT_SHA256
-RUN --network=none \
-    --mount=type=bind,from=tree,target=/target \
-    --mount=type=bind,source=build,target=/ctx/build \
-    --mount=type=secret,id=sb_key \
-    --mount=type=secret,id=sb_cert \
-    --mount=type=tmpfs,target=/tmp \
-    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
-    /ctx/build/seal-uki.sh
-
-# ---------------------------------------------------------------------------
-FROM tree
-COPY --from=sealer /out/boot /boot
-LABEL containers.bootc=1
-LABEL org.opencontainers.image.title="labhf"
-LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: k3s, NVIDIA, mdadm, cage+WPE kiosk"
-ENV container=oci
-STOPSIGNAL SIGRTMIN+3
-CMD ["/sbin/init"]

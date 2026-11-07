@@ -20,7 +20,8 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 ## Layout
 
 ```
-Containerfile          image build (multi-stage, see header)
+Containerfile          image build up to the flat tree (multi-stage, see header)
+Containerfile.seal     composefs digest + signed UKI over the chunked layers
 Containerfile.tools    host helper container: openssl, sbsigntools, virt-fw-vars
 build/                 scripts run inside build stages
 rootfs/                files copied into the image
@@ -232,6 +233,48 @@ Push the image to a registry and point the machine at it (`TARGET_IMGREF=` at
 install, or `bootc switch <ref>` later). Then `bootc upgrade && reboot`; a new
 UKI signed by the same db key keeps PCR 7 stable, so TPM unlock keeps working.
 
+### Update size: chunked layers
+
+bootc has no partial (per-file) pulls, also not with zstd:chunked, but it
+skips layers it already has. So `make build` doesn't ship one flat tree: it
+builds the tree, splits it with [chunkah](https://github.com/coreos/chunkah)
+into up to 128 content-based layers (one or more RPMs per layer, offline, no
+keys, only the tree mounted), then computes the composefs digest and signs
+the UKI over exactly those layers (`Containerfile.seal`; `/boot` is the last,
+small layer). A package update then only changes its layers. The base image's
+unused ostree repo in `/sysroot/` (2G) is dropped in the same step, and images
+are pushed with zstd. Chunking must happen before sealing: chunkah clamps
+mtimes to `SOURCE_DATE_EPOCH` (the commit time), and mtimes are part of the
+composefs metadata. Files the build installs itself (k3s, the signed NVIDIA
+modules) get a fixed mtime so the clamp doesn't move them to a new layer on
+every commit.
+
+Measured in QEMU: the image is 129 layers, 1.33 GiB with zstd (was one 4G
+layer; 1.75 GiB before stripping, below). An update after a full rebuild of a new commit (`make build
+TREE_BUILD_FLAGS=--no-cache`, as CI does) downloaded 222 MiB: the UKI
+(~92M, new digest every build), the initramfs (~74M, dracut is not
+reproducible), rpmdb, hwdb, SELinux policy store and the rebuilt nvidia.ko.
+Package updates add the layers of the packages that changed.
+
+### What the image leaves out
+
+`packages.sh` removes, as whole packages (so the rpmdb and the per-package
+layers stay accurate), what this machine never uses: `qemu-user-static-*`
+(foreign-arch containers), the AWS SDK (`python3-boto3`, `botocore`,
+`s3transfer`), `nvidia-gpu-firmware` (nouveau's; the driver's own firmware
+comes with `xorg-x11-drv-nvidia`), Wi-Fi/WWAN and Intel GPU/NPU/audio
+firmware, `microcode_ctl` (Intel CPU), `intel-mediasdk` and
+`mesa-vulkan-drivers` (cage and WPE render with GL). Our packages install
+without `%doc`, and only English translations are kept; the base image's docs,
+man pages and other translations are deleted. Licenses stay (the image is
+redistributed). The build fails if a removal ever takes a package that matters
+(kernel, bootc, skopeo, WPE/cage/Mesa, NVIDIA, AMD/Realtek firmware, k3s
+SELinux). Not removable: `flite` (WebKit speech synthesis) and `x265-libs`
+(via libheif-freeworld); either takes `wpewebkit` with it. The rpmdb stays:
+chunkah needs it for the layers, and scanners and `rpm -qf` need it.
+Uncompressed tree: 3.9G → 2.9G. Different hardware (Wi-Fi, Intel) may need
+some of these back.
+
 `/etc` is machine-local and 3-way merged on upgrade (k3s config,
 crypttab, mdadm.conf live there). Local deletions survive too, e.g. a
 `systemctl disable`.
@@ -403,6 +446,9 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
   address after k3s has started: kube-proxy exits on a node IP change and
   systemd restarts k3s (~20s). Pin the address in
   `/etc/rancher/k3s/config.yaml` (`node-ip: <LAN IPv4>`) on a server.
+- **Chunked + sealed** (verified in QEMU): `bootc switch`/`upgrade` to the
+  chunkah image boots under Secure Boot (composefs digest computed after
+  chunking matches), TPM unlock, signed modules load.
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
