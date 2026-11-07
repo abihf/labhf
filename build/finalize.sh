@@ -11,12 +11,13 @@ systemctl enable \
     systemd-networkd.service \
     systemd-resolved.service \
     labhf-firewall.service \
-    gui.service \
     k3s.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
     sysroot-state.mount
 systemctl set-default multi-user.target
+# gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
+# must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.
 # DNS from networkd (DNS= / DHCP) goes through resolved's stub
 ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 # / is composefs (no block device); root partition size is fixed by repart.d

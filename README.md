@@ -400,6 +400,8 @@ existing install) belong in a git-ignored `MIGRATION.md`.
    differs), but prefer option ROM hashes (sbctl) and a BIOS password.
 5. Boot, type the LUKS passphrase, run `labhf-enroll-tpm`. The passphrase
    stays as the only fallback (there is no recovery key), so make it strong.
+   Reboot once to check the unattended unlock, then start the kiosk, which
+   the image leaves disabled: `sudo systemctl enable --now gui.service`.
 6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
    data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
    new one (destroys the disks).
