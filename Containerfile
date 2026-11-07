@@ -44,6 +44,10 @@ RUN --network=none \
     bash /ctx/nvidia-kmod.sh build
 
 FROM base AS nvidia-sign
+# Build secrets are not part of the layer cache key: the cert's hash is, via
+# this arg, so a new db key re-runs every signing step (checked against the
+# mounted secret in each of them).
+ARG SB_CERT_SHA256
 RUN --mount=type=bind,source=build/nvidia-kmod.sh,target=/ctx/nvidia-kmod.sh \
     --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
@@ -54,6 +58,7 @@ RUN --network=none \
     --mount=type=secret,id=sb_key \
     --mount=type=secret,id=sb_cert \
     --mount=type=tmpfs,target=/tmp \
+    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
     bash /ctx/nvidia-kmod.sh sign
 
 # ---------------------------------------------------------------------------
@@ -88,14 +93,16 @@ RUN rm -rf /run/dnf /run/secrets 2>/dev/null; \
 # ---------------------------------------------------------------------------
 FROM base AS signer
 RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
-    dnf -y --setopt=keepcache=True install systemd-ukify
+    dnf -y --setopt=keepcache=True install systemd-ukify sbsigntools
 
 # ---------------------------------------------------------------------------
 FROM signer AS sdboot-sign
+ARG SB_CERT_SHA256
 RUN --network=none \
     --mount=type=bind,from=rootfs,source=/usr/lib/systemd/boot/efi,target=/in \
     --mount=type=secret,id=sb_key \
     --mount=type=secret,id=sb_cert \
+    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
     mkdir -p /out && \
     /usr/lib/systemd/systemd-sbsign sign \
         --private-key /run/secrets/sb_key \
@@ -112,12 +119,14 @@ COPY --from=sdboot-sign /out/ /usr/lib/systemd/boot/efi/
 
 # ---------------------------------------------------------------------------
 FROM signer AS sealer
+ARG SB_CERT_SHA256
 RUN --network=none \
     --mount=type=bind,from=tree,target=/target \
     --mount=type=bind,source=build,target=/ctx/build \
     --mount=type=secret,id=sb_key \
     --mount=type=secret,id=sb_cert \
     --mount=type=tmpfs,target=/tmp \
+    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
     /ctx/build/seal-uki.sh
 
 # ---------------------------------------------------------------------------

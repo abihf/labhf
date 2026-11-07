@@ -16,11 +16,12 @@ SSH_PUBKEY  ?= $(shell cat $(firstword $(wildcard $(HOME)/.ssh/id_ed25519.pub $(
 TOOLS_RUN = $(PODMAN) run --rm -u $(shell id -u):$(shell id -g) \
             --security-opt label=disable -v $(CURDIR):/work -w /work $(TOOLS_IMAGE)
 
-.PHONY: help tools keys build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
+.PHONY: help tools keys import-sbctl build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
 
 help:
 	@echo "make tools       build helper container (openssl, sbsigntools, virt-fw-vars)"
 	@echo "make keys        generate Secure Boot keys into ./keys (once!)"
+	@echo "make import-sbctl  or: use an existing sbctl key set (keys/sbctl-keys.tgz)"
 	@echo "make build       build the sealed image $(IMAGE)"
 	@echo "make vm-vars     OVMF vars with our keys enrolled"
 	@echo "make vm-install  install image to vm/disk.raw (LUKS root)"
@@ -36,11 +37,16 @@ keys/db.key:
 
 keys: keys/db.key
 
+# use an existing sbctl key set (see scripts/import-sbctl.sh) instead of `make keys`
+import-sbctl:
+	$(TOOLS_RUN) bash /work/scripts/import-sbctl.sh
+
 build: keys/db.key
 	$(PODMAN) build \
 	  --build-arg FEDORA=$(FEDORA) \
 	  --secret id=sb_key,src=keys/db.key \
 	  --secret id=sb_cert,src=keys/db.crt \
+	  --build-arg SB_CERT_SHA256=$$(sha256sum < keys/db.crt | cut -c1-64) \
 	  --security-opt label=disable \
 	  $(BUILD_ARGS) \
 	  -t $(IMAGE) -f Containerfile .

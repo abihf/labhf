@@ -5,9 +5,11 @@
 #   keys/{PK,KEK,db}.{key,crt}    private keys stay HERE (db.key = CI secret)
 #   keys/auth/{PK,KEK,db}.auth    for systemd-boot auto-enroll on the real PC
 #   keys/GUID
-# INCLUDE_MS_CA=1 (default) adds Microsoft UEFI CA 2011+2023 to db so GPU/NIC
-# option ROMs on real hardware keep working. Without them a discrete GPU may
-# show no picture at boot.
+# INCLUDE_MS_CA=1 (default) adds Microsoft UEFI CA 2011 + Option ROM UEFI CA
+# 2023 to db so GPU/NIC option ROMs on real hardware keep working. Without them
+# a discrete GPU may show no picture at boot. The 2011 CA also signs shim, so
+# Linux live USBs boot too (they can't unlock state: PCR 7 differs). Already
+# using sbctl with option ROM hashes? Use `make import-sbctl` instead.
 set -euo pipefail
 cd /work/keys
 
@@ -32,7 +34,8 @@ cp db.esl db-full.esl
 if [[ ${INCLUDE_MS_CA:-1} == 1 ]]; then
     mkdir -p ms
     curl -fsSL -o ms/uefi-ca-2011.der https://www.microsoft.com/pkiops/certs/MicCorUEFCA2011_2011-06-27.crt
-    curl -fsSL -o ms/uefi-ca-2023.der "https://www.microsoft.com/pkiops/certs/microsoft%20uefi%20ca%202023.crt"
+    # the *Option ROM* 2023 CA; "Microsoft UEFI CA 2023" signs boot loaders only
+    curl -fsSL -o ms/option-rom-uefi-ca-2023.der "https://www.microsoft.com/pkiops/certs/microsoft%20option%20rom%20uefi%20ca%202023.crt"
     for c in ms/*.der; do
         sbsiglist --owner "$ms_guid" --type x509 --output "${c%.der}.esl" "$c"
         cat "${c%.der}.esl" >> db-full.esl

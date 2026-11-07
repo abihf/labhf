@@ -39,7 +39,7 @@ Host needs `podman`, `qemu`, `swtpm`, `make` (`sudo pacman -S podman` on Arch/Ca
 
 ```bash
 make tools        # helper container
-make keys         # once; keys/db.key is the crown jewel
+make keys         # once; keys/db.key is the crown jewel (or: make import-sbctl)
 make build        # -> localhost/labhf:latest
 make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords
 make vm-run       # Secure Boot + swtpm; type the LUKS passphrase
@@ -302,6 +302,32 @@ redistributes NVIDIA and GPL binaries, see [License](#license)) or give the
 machine a read-only token in `/etc/ostree/auth.json`
 (`{"auths":{"ghcr.io":{"auth":"<base64 user:PAT with read:packages>"}}}`, mode 0600).
 
+### Using existing sbctl keys
+
+If the machine already boots with your own keys via `sbctl`, sign labhf with
+those: the firmware needs no change, and its db stays as sbctl built it
+(e.g. your cert plus option ROM hashes from the TPM event log, no Microsoft
+CAs, so shims can't boot). On the PC with this checkout:
+
+```bash
+# private keys (root-only on the machine); keys/ is git-ignored
+ssh -t <host> 'umask 077; sudo tar -C /var/lib/sbctl -czf /tmp/sbctl-keys.tgz GUID keys && sudo chown "$USER:" /tmp/sbctl-keys.tgz'
+scp <host>:/tmp/sbctl-keys.tgz keys/ && ssh <host> rm /tmp/sbctl-keys.tgz && chmod 600 keys/sbctl-keys.tgz
+# what is enrolled now (world-readable, without the 4-byte attribute header)
+mkdir -p keys/sbctl-efivars
+for v in PK-8be4df61-93ca-11d2-aa0d-00e098032b8c KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c db-d719b2cb-3d3a-4596-a3bc-dad00e67656f; do
+  ssh <host> cat /sys/firmware/efi/efivars/$v | tail -c +5 > keys/sbctl-efivars/${v%%-*}.esl
+done
+make import-sbctl
+```
+
+[`import-sbctl.sh`](scripts/import-sbctl.sh) checks that every key matches its
+certificate and that each certificate is the one enrolled, moves any previous
+keys to `keys/replaced-<date>/`, and writes the usual `keys/` layout with
+`.auth` files that re-enroll exactly the current PK/KEK/db. Then update the
+CI secrets and rebuild. The machine itself no longer needs sbctl or the db
+key once it runs labhf: CI signs.
+
 ## Installing on the real PC
 
 `labhf-install-disk` **wipes the whole target disk** (ESP, root, state). Back up anything on it first, and unplug data disks you want to keep
@@ -310,7 +336,9 @@ existing install) belong in a git-ignored `MIGRATION.md`.
 
 1. Back up `keys/`. Only `keys/db.key` + `keys/db.crt` are needed to build
    (CI secrets); keep `PK.key`/`KEK.key` offline.
-2. Firmware: enable TPM 2.0, **clear the Secure Boot keys / enter Setup Mode**.
+2. Firmware: enable TPM 2.0. **Already using your own keys with sbctl?**
+   Import them (below) and skip the key steps: the firmware keeps what is
+   enrolled. Otherwise **clear the Secure Boot keys / enter Setup Mode**.
 3. Boot a live Linux with podman (e.g. Fedora live), then:
    ```bash
    sudo podman pull ghcr.io/<owner>/labhf:latest
@@ -321,10 +349,12 @@ existing install) belong in a git-ignored `MIGRATION.md`.
      -e LABHF_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" \
      ghcr.io/<owner>/labhf:latest labhf-install-disk /dev/nvme0n1
    ```
-4. Reboot. systemd-boot offers **"Enroll Secure Boot keys: labhf"**
-   (`secure-boot-enroll manual`); pick it. The db includes Microsoft UEFI CA
-   2011/2023 so the GPU option ROM still loads — don't drop them unless you
-   know your GPU/NIC firmware is not MS-signed (no picture otherwise).
+4. Reboot. In Setup Mode systemd-boot offers **"Enroll Secure Boot keys:
+   labhf"** (`secure-boot-enroll manual`); pick it. With `make keys` the db
+   includes Microsoft's UEFI CA 2011 (+ the 2023 Option ROM CA) so a GPU
+   option ROM still loads; note that this also lets any Microsoft-signed
+   shim (i.e. most Linux live USBs) boot. They can't unlock `state` (PCR 7
+   differs), but prefer option ROM hashes (sbctl) and a BIOS password.
 5. Boot, type the LUKS passphrase, run `labhf-enroll-tpm`. The passphrase
    stays as the only fallback (there is no recovery key), so make it strong.
 6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
@@ -369,6 +399,10 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
   → kubelet; k3s's own rules unchanged by start, reload and stop; no AVCs.
   Right after boot Traefik's ports answer only once k3s has written its
   rules (as without the firewall).
+- **k3s restarts once or twice at boot** when a NIC gets a SLAAC IPv6
+  address after k3s has started: kube-proxy exits on a node IP change and
+  systemd restarts k3s (~20s). Pin the address in
+  `/etc/rancher/k3s/config.yaml` (`node-ip: <LAN IPv4>`) on a server.
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
