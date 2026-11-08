@@ -11,6 +11,8 @@ systemctl enable \
     systemd-networkd.service \
     systemd-resolved.service \
     labhf-firewall.service \
+    var-home.mount \
+    auditd.service \
     k3s.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
@@ -22,6 +24,16 @@ systemctl set-default multi-user.target
 ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 # / is composefs (no block device); root partition size is fixed by repart.d
 systemctl mask systemd-growfs-root.service
+# no reboot from the keyboard, no root shell on tty9
+# (the base image already has ctrl-alt-del.target in /etc, so mask --force)
+systemctl mask --force ctrl-alt-del.target debug-shell.service
+
+# debugging in QEMU only (make build SERIAL_CONSOLE=1)
+if [[ ${SERIAL_CONSOLE:-0} == 1 ]]; then
+    cat > /usr/lib/bootc/kargs.d/05-labhf-serial.toml <<'TOML'
+kargs = ["console=ttyS0,115200"]
+TOML
+fi
 
 # systemd-boot is signed in the sdboot-sign stage (Containerfile): this tree
 # has third-party packages installed, so the db key is never mounted here.
@@ -59,6 +71,26 @@ semanage fcontext -a -t container_file_t '/var/home/public(/.*)?'
 for p in /home/public /var/home/public /home/public/x; do
     [[ $(matchpathcon -n "$p") == *:container_file_t:* ]] || { echo "bad label for $p: $(matchpathcon -n "$p")" >&2; exit 1; }
 done
+
+# --- modes git can't carry (rootfs/ comes from a checkout in CI) ---------------
+chmod 0440 /etc/sudoers.d/*
+chmod 0750 /etc/audit /etc/audit/rules.d
+chmod 0640 /etc/audit/rules.d/50-labhf.rules
+
+# --- setuid: allow-list, so a future package can't add one unnoticed ----------
+# su, mount, chsh, pkexec, ... have no job here: administration is abi + sudo.
+keep_suid=(/usr/bin/sudo /usr/bin/passwd /usr/bin/unix_chkpwd /usr/bin/nvidia-modprobe)
+while read -r f; do
+    [[ " ${keep_suid[*]} " == *" $f "* ]] || chmod ug-s "$f"
+done < <(find /usr -xdev -type f -perm /6000)
+find /usr -xdev -type f -perm /6000
+
+# --- lock an account after repeated password failures (console, sudo) ---------
+authselect enable-feature with-faillock
+cat >> /etc/security/faillock.conf <<'FAILLOCK'
+deny = 5
+unlock_time = 300
+FAILLOCK
 
 # --- scrub state that must not be sealed -------------------------------------
 # keep /ostree -> sysroot/ostree (bootc lint baseimage-root requires it)

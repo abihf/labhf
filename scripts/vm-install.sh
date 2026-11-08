@@ -21,6 +21,7 @@ $PODMAN run --rm -it --privileged --pid=host --ipc=host \
     -e LABHF_LUKS_PASSWORD="${LUKS_PASSWORD:-}" \
     -e LABHF_ABI_PASSWORD="${ABI_PASSWORD:-}" \
     -e LABHF_YES=1 \
+    -e LABHF_VM_TEST=1 \
     "$IMAGE" labhf-install-disk "$loop"
 
 chown "${SUDO_UID:-0}:${SUDO_GID:-0}" vm/disk.raw

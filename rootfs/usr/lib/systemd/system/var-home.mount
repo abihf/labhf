@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# /var itself can't be nosuid (containers live under it), /home can.
+[Unit]
+Description=/home without setuid binaries or device nodes
+Before=local-fs.target
+After=var.mount
+
+[Mount]
+What=/var/home
+Where=/var/home
+Type=none
+Options=bind,nosuid,nodev
+
+[Install]
+WantedBy=local-fs.target

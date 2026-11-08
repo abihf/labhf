@@ -1,0 +1,5 @@
+# Who did what, never the objects themselves (no secret values in the log).
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: Metadata

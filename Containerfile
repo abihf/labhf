@@ -86,10 +86,11 @@ COPY rootfs/ /
 # Public Secure Boot enrollment files (.auth) for systemd-boot auto-enroll
 COPY keys/auth/ /usr/lib/bootc/install/secureboot-keys/labhf/
 
+ARG SERIAL_CONSOLE=0
 RUN --network=none \
     --mount=type=bind,source=build,target=/ctx/build \
     --mount=type=tmpfs,target=/tmp \
-    /ctx/build/finalize.sh
+    SERIAL_CONSOLE="${SERIAL_CONSOLE}" /ctx/build/finalize.sh
 
 # Separate step so no build-secret mount exists under /run
 RUN rm -rf /run/dnf /run/secrets 2>/dev/null; \

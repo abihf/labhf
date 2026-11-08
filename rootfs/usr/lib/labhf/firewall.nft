@@ -40,6 +40,15 @@ table inet labhf {
         elements = { 10.42.0.0/16, 10.43.0.0/16 }
     }
 
+    # per-source limit on new SSH connections (a global one would let anyone
+    # on the LAN lock you out)
+    set ssh_limit4 {
+        type ipv4_addr; flags dynamic; timeout 5m; size 4096
+    }
+    set ssh_limit6 {
+        type ipv6_addr; flags dynamic; timeout 5m; size 4096
+    }
+
     chain input {
         type filter hook input priority filter + 10; policy drop;
         ct state established,related accept
@@ -48,6 +57,8 @@ table inet labhf {
         meta l4proto { icmp, ipv6-icmp } accept
         # DHCPv6 replies (DHCPv4 clients use packet sockets, before netfilter)
         ip6 saddr fe80::/10 udp dport 546 accept
+        tcp dport 22 ct state new add @ssh_limit4 { ip saddr limit rate over 10/minute burst 20 packets } drop
+        tcp dport 22 ct state new add @ssh_limit6 { ip6 saddr limit rate over 10/minute burst 20 packets } drop
         tcp dport @tcp_open accept
         udp dport @udp_open accept
         jump local_input

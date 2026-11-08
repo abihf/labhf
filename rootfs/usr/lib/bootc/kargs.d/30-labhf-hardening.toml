@@ -1,0 +1,16 @@
+# Memory hardening
+# DMA: strict IOTLB, no identity mapping, block PCI bus mastering before the
+# kernel's IOMMU setup.
+# Initrd: never a shell, even after `state` is unlocked.
+kargs = [
+  "init_on_alloc=1",
+  "slab_nomerge",
+  "page_alloc.shuffle=1",
+  "randomize_kstack_offset=on",
+  "vsyscall=none",
+  "iommu.strict=1",
+  "iommu.passthrough=0",
+  "efi=disable_early_pci_dma",
+  "rd.shell=0",
+  "rd.emergency=reboot",
+]

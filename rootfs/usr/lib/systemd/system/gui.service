@@ -28,5 +28,22 @@ ExecStart=/usr/bin/labhf-gui
 Restart=always
 RestartSec=5
 
+# Hardening. Not PrivateDevices (DRM, input, tty) and not RestrictNamespaces
+# or a syscall filter: WebKit's bwrap sandbox needs user namespaces.
+# Not ProtectKernelTunables, ProtectKernelLogs or ProtectHostname either: each
+# bind-mounts over part of /proc, and the kernel then refuses bwrap's new proc
+# mount ("Can't mount proc on /proc: Operation not permitted").
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/run/user/2000 -/var/home/gui
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
 [Install]
 WantedBy=multi-user.target

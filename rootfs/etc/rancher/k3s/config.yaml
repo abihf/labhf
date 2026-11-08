@@ -2,3 +2,13 @@
 selinux: true
 write-kubeconfig-mode: "0600"
 # data lives on the encrypted root under /var/lib/rancher/k3s
+secrets-encryption: true
+# kubelet refuses to change kernel settings (values: sysctl.d/90-labhf-hardening.conf)
+protect-kernel-defaults: true
+kube-apiserver-arg:
+  - "admission-control-config-file=/etc/rancher/k3s/pod-security.yaml"
+  - "audit-policy-file=/etc/rancher/k3s/audit-policy.yaml"
+  - "audit-log-path=/var/lib/rancher/k3s/server/logs/audit.log"
+  - "audit-log-maxage=30"
+  - "audit-log-maxbackup=5"
+  - "audit-log-maxsize=100"

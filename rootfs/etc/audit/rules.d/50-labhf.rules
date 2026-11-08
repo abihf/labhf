@@ -1,0 +1,13 @@
+# Changes to the machine-local config: /etc is writable, unlike the sealed /usr
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k sudo
+-w /etc/sudoers.d/ -p wa -k sudo
+-w /etc/ssh/ -p wa -k ssh
+-w /etc/systemd/ -p wa -k systemd
+-w /etc/crypttab -p wa -k boot
+-w /etc/fstab -p wa -k boot
+-w /etc/rancher/ -p wa -k k3s
+-w /etc/labhf/ -p wa -k labhf
+-w /etc/selinux/ -p wa -k selinux

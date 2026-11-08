@@ -4,6 +4,5 @@
 # (tpm2-measure-pcr=yes there: PCR 15 gets the volume key once unlocked).
 kargs = [
   "rw",
-  "console=ttyS0,115200",
   "console=tty0",
 ]

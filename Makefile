@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # labhf — build, test in QEMU, install.
-# Host needs: podman (rootful via sudo), qemu, swtpm, make.
+# Host needs: podman, qemu, swtpm, make. Builds are rootless; only writing a
+# disk (vm-install) uses sudo.
 
-PODMAN      ?= sudo podman
+PODMAN      ?= podman
 IMAGE       ?= localhost/labhf:latest
 TOOLS_IMAGE ?= localhost/labhf-tools:latest
 # throwaway local registry so the VM can `bootc switch/upgrade` (QEMU host = 10.0.2.2)
@@ -19,6 +20,9 @@ CHUNKED_IMAGE ?= localhost/labhf-chunked:build
 # the same layers (generated files would otherwise change every build)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || date +%s)
 PUSH_ARGS   ?= --compression-format zstd
+# 1: add console=ttyS0 (boot log + passphrase prompt on the serial console),
+# for debugging in QEMU. Off in the image that ships.
+SERIAL_CONSOLE ?= 0
 # e.g. --no-cache: rebuild everything, as CI does on a fresh runner
 TREE_BUILD_FLAGS ?=
 
@@ -26,7 +30,13 @@ SHELL       := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 SSH_PUBKEY  ?= $(shell cat $(firstword $(wildcard $(HOME)/.ssh/id_ed25519.pub $(HOME)/.ssh/id_ecdsa.pub $(HOME)/.ssh/id_rsa.pub)) 2>/dev/null)
 
-TOOLS_RUN = $(PODMAN) run --rm -u $(shell id -u):$(shell id -g) \
+# files written to ./keys and ./vm must belong to the invoking user
+ifeq ($(findstring sudo,$(PODMAN)),sudo)
+TOOLS_USER = -u $(shell id -u):$(shell id -g)
+else
+TOOLS_USER = --userns=keep-id
+endif
+TOOLS_RUN = $(PODMAN) run --rm $(TOOLS_USER) \
             --security-opt label=disable -v $(CURDIR):/work -w /work $(TOOLS_IMAGE)
 
 .PHONY: help tools keys import-sbctl build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
@@ -63,6 +73,7 @@ SIGN_ARGS = --secret id=sb_key,src=keys/db.key --secret id=sb_cert,src=keys/db.c
 # 3. seal: composefs digest + signed UKI over the chunked layers
 build: keys/db.key
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --build-arg SERIAL_CONSOLE=$(SERIAL_CONSOLE) \
 	  --security-opt label=disable \
 	  $(TREE_BUILD_FLAGS) --target tree -t $(TREE_IMAGE) -f Containerfile .
 	$(PODMAN) run --rm --network=none --security-opt label=disable \
@@ -84,6 +95,8 @@ vm/OVMF_VARS.qcow2: keys/db.key
 vm-vars: vm/OVMF_VARS.qcow2
 
 vm-install: vm/OVMF_VARS.qcow2
+	# the installer reads root's image store; the build is in ours
+	$(PODMAN) save --format oci-archive $(IMAGE) | sudo podman load
 	sudo PODMAN=podman IMAGE=$(IMAGE) SSH_PUBKEY="$(SSH_PUBKEY)" \
 	  LUKS_PASSWORD="$(LUKS_PASSWORD)" ABI_PASSWORD="$(ABI_PASSWORD)" scripts/vm-install.sh
 

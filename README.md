@@ -37,6 +37,9 @@ vm/                    QEMU disks, firmware vars, swtpm state (git-ignored)
 ## Build and test in QEMU
 
 Host needs `podman`, `qemu`, `swtpm`, `make` (`sudo pacman -S podman` on Arch/CachyOS).
+Builds are rootless (needs a subuid/subgid range for your user); only
+`make vm-install`, which writes a disk, uses sudo. At boot the LUKS prompt is in
+the QEMU window (`make build SERIAL_CONSOLE=1` also puts it on the serial console).
 
 ```bash
 make tools        # helper container
@@ -46,6 +49,9 @@ make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwo
 make vm-run       # Secure Boot + swtpm; type the LUKS passphrase
 make vm-ssh       # ssh abi@localhost -p 2222
 ```
+
+The VM install gets passwordless sudo for `abi` (`LABHF_VM_TEST=1`, set only by
+`scripts/vm-install.sh`; the image has no such rule). Root has no SSH login.
 
 Inside the VM (`sudo -i` first):
 
@@ -410,6 +416,30 @@ existing install) belong in a git-ignored `MIGRATION.md`.
 
 After a BIOS, GPU firmware or dbx update the TPM won't unlock: type the
 LUKS passphrase, then rerun `labhf-enroll-tpm`.
+
+## Hardening
+
+| Area | What the image does |
+|---|---|
+| SSH | Keys only; `AllowUsers abi`, no root login, no agent/X11 forwarding or tunnels, `AllowTcpForwarding local` (for `ssh -L 6443`), `MaxAuthTries 3`; firewall limits new connections per source (burst 20, then 10/min) |
+| Accounts | `root` and `gui` locked, `gui` has no shell; sudo asks for a password, `use_pty`, 5-minute timestamp; 5 failed passwords lock the account for 5 minutes (console, sudo) |
+| Kernel | `lockdown=integrity`; `kptr_restrict`, `dmesg_restrict`, no unprivileged BPF, ptrace scope 1; `init_on_alloc`, `slab_nomerge`, `randomize_kstack_offset`, `vsyscall=none`; strict IOMMU, `efi=disable_early_pci_dma` |
+| Boot | `rd.shell=0 rd.emergency=reboot`, debug shell and Ctrl-Alt-Del masked, no serial console |
+| Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`) |
+| Files | Setuid allow-list: only `sudo`, `passwd`, `unix_chkpwd`, `nvidia-modprobe`. `/home` is `nosuid,nodev`. No core dumps |
+| k3s | Secrets encrypted, `protect-kernel-defaults`, API audit log (metadata only) in `/var/lib/rancher/k3s/server/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
+| Kiosk | `NoNewPrivileges`, read-only system, private `/tmp`, restricted address families. Not `ProtectKernelTunables`, `ProtectKernelLogs` or `ProtectHostname`: each masks part of `/proc`, and WebKit's sandbox then can't mount its own |
+| Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, k3s, SELinux) |
+
+`kernel.panic_on_oops=1` and `kernel.panic=10` are required by
+`protect-kernel-defaults`, so a kernel oops reboots the machine. With several
+keys in an agent, use `IdentitiesOnly yes` or `MaxAuthTries 3` may reject you.
+`/etc` and `/var` stay writable, so a root compromise can still persist there;
+the sealed image only protects `/usr`.
+
+Verified in QEMU: all of the above, except that QEMU has no IOMMU here (so the
+DMA arguments are untested until real hardware) and the `rd.emergency=reboot`
+path was not triggered.
 
 ## Open items / known risks
 
