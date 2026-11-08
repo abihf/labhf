@@ -5,4 +5,6 @@
 kargs = [
   "rw",
   "console=tty0",
+  # the RAID, the backup disk and the LAN NIC are all on USB
+  "usbcore.autosuspend=-1",
 ]
