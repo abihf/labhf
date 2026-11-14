@@ -16,7 +16,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
 | Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by the installer; `gui` (uid 2000) runs the dashboard |
-| Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000` |
+| Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000`, served by `home-dashboard.service` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
 
 ## Layout
 

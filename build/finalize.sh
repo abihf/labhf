@@ -14,6 +14,7 @@ systemctl enable \
     var-home.mount \
     auditd.service \
     k3s.service \
+    home-dashboard.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
     sysroot-state.mount

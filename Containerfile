@@ -81,6 +81,14 @@ RUN --mount=type=bind,source=build,target=/ctx/build \
     --mount=type=tmpfs,target=/tmp \
     K3S_VERSION="${K3S_VERSION}" K3S_SHA256="${K3S_SHA256}" /ctx/build/k3s.sh
 
+# the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
+ARG HOME_DASHBOARD_VERSION=v0.0.2
+ARG HOME_DASHBOARD_SHA256=66e8ce33a8602b3fe8a72b98e112a85a67b886bb348932a7b75b6a7158671003
+RUN --mount=type=bind,source=build,target=/ctx/build \
+    --mount=type=tmpfs,target=/tmp \
+    HOME_DASHBOARD_VERSION="${HOME_DASHBOARD_VERSION}" HOME_DASHBOARD_SHA256="${HOME_DASHBOARD_SHA256}" \
+    /ctx/build/home-dashboard.sh
+
 # Config overlay (systemd units, kargs, dracut, repart, scripts, ...)
 COPY rootfs/ /
 # Public Secure Boot enrollment files (.auth) for systemd-boot auto-enroll

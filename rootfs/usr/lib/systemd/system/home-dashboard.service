@@ -1,0 +1,43 @@
+[Unit]
+Description=Home dashboard server (the page the kiosk shows)
+Documentation=https://github.com/abihf/home-dashboard
+After=network.target
+Before=gui.service
+
+[Service]
+Type=simple
+# Only the kiosk on this machine needs it
+Environment=HOST=127.0.0.1 PORT=3000
+# Background images are read from BG_DIR at runtime (not in the executable).
+# Machine-local overrides (BG_DIR, PORT, ...): /etc/labhf/home-dashboard.env
+Environment=BG_DIR=/var/lib/home-dashboard/bg
+EnvironmentFile=-/etc/labhf/home-dashboard.env
+ExecStart=/usr/libexec/home-dashboard/home-dashboard
+Restart=always
+RestartSec=10
+SyslogIdentifier=home-dashboard
+
+DynamicUser=yes
+StateDirectory=home-dashboard
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
