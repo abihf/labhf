@@ -36,8 +36,12 @@ TOOLS_USER = -u $(shell id -u):$(shell id -g)
 else
 TOOLS_USER = --userns=keep-id
 endif
+# keys/ may be a symlink to a private directory: resolve it, and mount it at
+# its real path so the link inside /work points somewhere
+KEYS_DIR  = $(realpath keys)
 TOOLS_RUN = $(PODMAN) run --rm $(TOOLS_USER) \
-            --security-opt label=disable -v $(CURDIR):/work -w /work $(TOOLS_IMAGE)
+            --security-opt label=disable -v $(CURDIR):/work -w /work \
+            $(if $(KEYS_DIR),-v $(KEYS_DIR):$(KEYS_DIR)) $(TOOLS_IMAGE)
 
 .PHONY: help tools keys import-sbctl build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
 
@@ -75,6 +79,7 @@ build: keys/db.key
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
 	  --build-arg SERIAL_CONSOLE=$(SERIAL_CONSOLE) \
 	  --security-opt label=disable \
+	  --build-context keys=$(KEYS_DIR) \
 	  $(TREE_BUILD_FLAGS) --target tree -t $(TREE_IMAGE) -f Containerfile .
 	$(PODMAN) run --rm --network=none --security-opt label=disable \
 	  --mount=type=image,src=$(TREE_IMAGE),dest=/chunkah \

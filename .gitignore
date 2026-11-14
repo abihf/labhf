@@ -1,5 +1,8 @@
-# Secure Boot keys: NEVER commit private keys
-keys/
+# Secure Boot keys: NEVER commit private keys. No trailing slash: keys may be
+# a symlink to a private directory, which "keys/" would not match.
+/keys
+# migration backups (symlink to a private directory)
+/backup
 vm/
 *.raw
 *.qcow2

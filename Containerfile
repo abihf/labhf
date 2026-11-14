@@ -84,7 +84,9 @@ RUN --mount=type=bind,source=build,target=/ctx/build \
 # Config overlay (systemd units, kargs, dracut, repart, scripts, ...)
 COPY rootfs/ /
 # Public Secure Boot enrollment files (.auth) for systemd-boot auto-enroll
-COPY keys/auth/ /usr/lib/bootc/install/secureboot-keys/labhf/
+# from the "keys" build context (make passes the real directory: keys/ may be
+# a symlink to a private directory, which the build context would not follow)
+COPY --from=keys auth/ /usr/lib/bootc/install/secureboot-keys/labhf/
 
 ARG SERIAL_CONSOLE=0
 RUN --network=none \
