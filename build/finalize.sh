@@ -15,6 +15,7 @@ systemctl enable \
     auditd.service \
     k3s.service \
     home-dashboard.service \
+    smartd.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
     sysroot-state.mount
@@ -106,7 +107,9 @@ find /var/log /var/cache /var/lib -mindepth 1 \
 rm -rf /var/lib/rpm-state
 # /boot must be empty in the tree; the sealer stage adds the signed UKI
 rm -rf /boot && mkdir -p /boot
-# packages leave empty runtime dirs (kea: /run/kea, recreated by its unit /
-# tmpfiles at boot); bootc lint rejects content under /run
-rm -rf /run/dnf /run/kea
+# packages leave runtime files behind (kea: /run/kea, recreated by its unit /
+# tmpfiles at boot; selinux-policy: /run/selinux-policy, scratch files of a
+# policy rebuild that is already in the image); bootc lint rejects content
+# under /run
+rm -rf /run/dnf /run/kea /run/selinux-policy
 # lint runs in its own RUN step (Containerfile) without /run/secrets mounted
