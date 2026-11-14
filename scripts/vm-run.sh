@@ -4,7 +4,12 @@
 # 3 extra disks for RAID5 testing. ssh: `ssh -p 2222 root@localhost`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${VM_MEM:=6G}" "${VM_CPUS:=4}" "${VM_GL:=1}" "${VM_INSTALLER:=0}"
+: "${VM_MEM:=6G}" "${VM_CPUS:=4}" "${VM_GL:=1}" "${VM_INSTALLER:=0}" "${VM_NETBOOT:=}"
+# VM_NETBOOT=DIR: the NIC boots first, QEMU's DHCP hands out DIR/labhf-installer.efi
+# over TFTP (UEFI PXE, with Secure Boot)
+nic=(-netdev "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443${VM_NETBOOT:+,tftp=$VM_NETBOOT,bootfile=labhf-installer.efi}"
+     -device "virtio-net-pci,netdev=n0${VM_NETBOOT:+,bootindex=0}")
+root_idx=0; [[ -z $VM_NETBOOT ]] || root_idx=1
 # VM_INSTALLER=1: also attach vm/installer-esp.img (boots when disk.raw has no
 # ESP yet) and a small USB stick the installer must not see
 extra=()
@@ -45,10 +50,10 @@ exec qemu-system-x86_64 \
     -chardev socket,id=chrtpm,path=vm/tpm/sock \
     -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
     -drive file=vm/disk.raw,format=raw,if=none,id=root,cache=unsafe \
-    -device virtio-blk-pci,drive=root,bootindex=0 \
+    -device "virtio-blk-pci,drive=root,bootindex=$root_idx" \
     -drive file=vm/raid1.qcow2,if=virtio -drive file=vm/raid2.qcow2,if=virtio \
     -drive file=vm/raid3.qcow2,if=virtio \
-    -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443 \
+    "${nic[@]}" \
     -device "$gpu" -display "$VM_DISPLAY" \
     -serial mon:stdio \
     "${extra[@]}"

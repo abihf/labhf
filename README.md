@@ -10,6 +10,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0 |
 | Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for k3s hostPaths |
 | Network | systemd-networkd + systemd-resolved (no NetworkManager, no LLMNR/mDNS); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
+| DNS / DHCP | `/etc/resolv.conf` lists the network's DNS servers directly; resolved has no 127.0.0.53/54 stub, so port 53 stays free for a DNS server in k3s. `kea` (DHCPv4) is installed, `kea-dhcp4` disabled until a machine-local `/etc/kea/kea-dhcp4.conf` is in place |
 | Firewall | own nftables table `inet labhf` next to k3s's rules: inbound only SSH + Traefik/NodePorts by default, pod/service IPs not reachable from outside; machine-local `/etc/labhf/firewall.d/*.nft` |
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
@@ -409,6 +410,21 @@ Verified in QEMU: Secure Boot boot of the installer, PCR 15 extended, DHCP,
 pull, USB stick not listed, install, reboot into the installed system, and
 `vm-check.sh` all passing on it.
 
+**Netboot** (no ESP copy, no USB stick): the firmware loads the same signed
+UKI over the network (UEFI PXE via TFTP, or UEFI HTTP boot) and Secure Boot
+checks it as usual. `make netboot-serve OUT=... NETBOOT_IFACE=... NETBOOT_MACS=...
+NETBOOT_IP=... NETBOOT_GW=...` runs dnsmasq (DHCP + TFTP, in a throwaway
+root container: the one sudo step) plus a rootless HTTP server on port 8080.
+dnsmasq answers only the listed MACs, so it can run next to the LAN's normal
+DHCP server, or stand in for it when that server is the machine being
+installed. On the target, enable the firmware's network stack (UEFI PXE /
+HTTP boot) and pick the NIC in the boot menu; firmware usually netboots only
+from onboard NICs, not USB ones. `make vm-netboot` boots the VM from QEMU's
+built-in TFTP under Secure Boot (it keeps `vm/disk.raw`; the installer asks
+before touching a disk). When started from systemd-boot on the target disk
+instead, the installer ignores that disk's ESP (`systemd.gpt_auto=0`) and
+unmounts anything of the target before partitioning.
+
 ## Installing on the real PC
 
 `labhf-install-disk` **wipes the whole target disk** (ESP, root, state). Back up anything on it first, and unplug data disks you want to keep
@@ -444,7 +460,7 @@ existing install) belong in a git-ignored `MIGRATION.md`.
    data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
    new one (destroys the disks).
 7. k3s hostPaths outside `/media/*` need an SELinux label pods may use, e.g.
-   `sudo semanage fcontext -a -t container_file_t '/home/abi/compose(/.*)?' && sudo restorecon -R /home/abi/compose`.
+   `sudo semanage fcontext -a -t container_file_t '/var/home/abi/compose(/.*)?' && sudo restorecon -R /var/home/abi/compose` (SELinux rules need the `/var/home` path: `/home` is an equivalence alias).
 
 After a BIOS, GPU firmware or dbx update the TPM won't unlock: type the
 LUKS passphrase, then rerun `labhf-enroll-tpm`.

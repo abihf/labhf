@@ -71,6 +71,19 @@ keyfile=$work/install.key
 (umask 077; head -c 64 /dev/urandom > "$keyfile")
 
 echo ">> partitioning"
+# systemd-repart creates each new partition with BLKPG_ADD_PARTITION, which
+# fails with EBUSY ("Failed to create new partition ...: Device or resource
+# busy") while the kernel still knows a partition of that number from the old
+# table. Clear the old table and remove its partitions from the kernel first.
+for p in $(lsblk -lnpo NAME,TYPE "$disk" | awk '$2 == "part" {print $1}'); do
+    wipefs -aq "$p" || true
+done
+wipefs -aq "$disk"
+partx -d "$disk" 2>/dev/null || true
+blockdev --rereadpt "$disk" 2>/dev/null || true
+udevadm settle 2>/dev/null || sleep 2
+left=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2 == "part" {print $1}')
+[[ -z $left ]] || { echo "partitions still known to the kernel (in use?): $left" >&2; exit 1; }
 systemd-repart --empty=force --dry-run=no --discard=no \
     --definitions=/usr/lib/labhf/repart.d \
     --key-file="$keyfile" \

@@ -34,7 +34,9 @@ INSTALLER_REGISTRY ?= $(VM_REGISTRY)
 INSTALLER_TARGET   ?= $(INSTALLER_REGISTRY)/labhf:latest
 INSTALLER_NET      ?= dhcp
 INSTALLER_EXTRA    ?=
-INSTALLER_CMDLINE   = rdinit=/usr/lib/systemd/systemd console=tty0 selinux=0 audit=0 \
+# systemd.gpt_auto=0: when started from systemd-boot on the target disk, systemd
+# would otherwise mount that ESP (LoaderDevicePartUUID) and the disk is busy
+INSTALLER_CMDLINE   = rdinit=/usr/lib/systemd/systemd console=tty0 selinux=0 audit=0 systemd.gpt_auto=0 \
                       systemd.firstboot=off labhf.registry=$(INSTALLER_REGISTRY) \
                       labhf.target-imgref=$(INSTALLER_TARGET) labhf.net=$(INSTALLER_NET) \
                       $(INSTALLER_EXTRA)
@@ -58,7 +60,7 @@ TOOLS_RUN = $(PODMAN) run --rm $(TOOLS_USER) \
             --security-opt label=disable -v $(CURDIR):/work -w /work \
             $(if $(KEYS_DIR),-v $(KEYS_DIR):$(KEYS_DIR)) $(TOOLS_IMAGE)
 
-.PHONY: help tools keys import-sbctl installer vm-netinstall serve-install build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
+.PHONY: help tools keys import-sbctl installer installer-usb vm-netinstall vm-netboot netboot-serve serve-install build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
 
 help:
 	@echo "make tools       build helper container (openssl, sbsigntools, virt-fw-vars)"
@@ -154,7 +156,7 @@ serve-install:
 	$(PODMAN) run -d --name labhf-registry -p 5000:5000 \
 	  -e REGISTRY_STORAGE_MAINTENANCE_READONLY='{"enabled":true}' \
 	  -v labhf-registry:/var/lib/registry docker.io/library/registry:2
-	@echo "serving read-only: $$(hostname -I | cut -d' ' -f1):5000/labhf:latest"
+	@echo "serving read-only: $$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<NF;i++) if($$i=="src") print $$(i+1)}'):5000/labhf:latest"
 
 # Secure Boot signed network installer (Containerfile.installer). Uses the
 # tree from `make build`. No secrets inside: passwords are typed at install.
@@ -169,11 +171,34 @@ installer: keys/db.key
 	  --target output -o type=local,dest=$(OUT) -f Containerfile.installer .
 	@ls -lh $(OUT)/labhf-installer.efi
 
-# a small FAT disk with the installer as the removable-media boot path,
-# standing in for the target's existing ESP (mtools: no loop device)
-vm/installer-esp.img: $(OUT)/labhf-installer.efi
+# a small FAT disk with the installer as the removable-media boot path, which
+# firmware starts directly (no boot loader in front: nothing on the target is
+# touched). The VM uses it as a second disk; for a real machine write it to a
+# USB stick: make installer-usb, then sudo dd if=$(OUT)/labhf-installer-usb.img of=/dev/sdX
+# (mtools: no loop device)
+define FAT_INSTALLER
 	$(TOOLS_RUN) sh -c 'rm -f $@ && mkfs.vfat -C -n LABHFINST $@ 307200 >/dev/null && \
 	  mmd -i $@ ::/EFI ::/EFI/BOOT && mcopy -i $@ $< ::/EFI/BOOT/BOOTX64.EFI && mdir -i $@ ::/EFI/BOOT'
+endef
+vm/installer-esp.img: $(OUT)/labhf-installer.efi
+	$(FAT_INSTALLER)
+$(OUT)/labhf-installer-usb.img: $(OUT)/labhf-installer.efi
+	$(FAT_INSTALLER)
+installer-usb: $(OUT)/labhf-installer-usb.img
+	@ls -lh $<
+
+# UEFI network boot of the installer for a real machine (PXE/TFTP + HTTP boot),
+# see scripts/netboot-serve.sh; e.g.
+#   make netboot-serve OUT=out/target NETBOOT_IFACE=eth0 NETBOOT_MACS=aa:..,bb:.. \
+#     NETBOOT_IP=192.0.2.13 NETBOOT_GW=192.0.2.1
+netboot-serve:
+	OUT=$(OUT) FEDORA=$(FEDORA) scripts/netboot-serve.sh
+
+# the VM netboots the installer from QEMU's built-in DHCP/TFTP (vm/disk.raw is
+# kept: the installer asks before touching it). The NIC stays first, so a
+# reboot starts the installer again: close the VM and make vm-run after installing
+vm-netboot: vm/OVMF_VARS.qcow2 $(OUT)/labhf-installer.efi
+	VM_NETBOOT=$(abspath $(OUT)) VM_MEM=8G scripts/vm-run.sh
 
 # fresh VM install through the installer UKI, all without sudo:
 #   make build push && make installer INSTALLER_EXTRA="console=ttyS0,115200 labhf.vm-test=1" && make vm-netinstall

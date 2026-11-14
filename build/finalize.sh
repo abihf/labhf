@@ -20,8 +20,14 @@ systemctl enable \
 systemctl set-default multi-user.target
 # gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
 # must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.
-# DNS from networkd (DNS= / DHCP) goes through resolved's stub
-ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+# DNS from networkd (DNS= / DHCP), via resolved's uplink file: programs that
+# read resolv.conf (dig, containerd, k3s, Go binaries) ask the network's DNS
+# servers directly. Not the stub (127.0.0.53): a k3s LoadBalancer or hostPort
+# on 53 (a DNS server in the cluster) DNATs every local address's port 53,
+# 127.0.0.53/54 included, to its pod; while that pod is down, the host has no
+# DNS and can't even pull the pod's image. glibc lookups still go through
+# resolved (nss-resolve), with its cache.
+ln -sf ../run/systemd/resolve/resolv.conf /etc/resolv.conf
 # / is composefs (no block device); root partition size is fixed by repart.d
 systemctl mask systemd-growfs-root.service
 # no reboot from the keyboard, no root shell on tty9
@@ -99,5 +105,7 @@ find /var/log /var/cache /var/lib -mindepth 1 \
 rm -rf /var/lib/rpm-state
 # /boot must be empty in the tree; the sealer stage adds the signed UKI
 rm -rf /boot && mkdir -p /boot
-rm -rf /run/dnf
+# packages leave empty runtime dirs (kea: /run/kea, recreated by its unit /
+# tmpfiles at boot); bootc lint rejects content under /run
+rm -rf /run/dnf /run/kea
 # lint runs in its own RUN step (Containerfile) without /run/secrets mounted

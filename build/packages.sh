@@ -49,7 +49,7 @@ dnf -y install \
     cryptsetup tpm2-tools tpm2-tss openssl sudo \
     fsverity-utils dosfstools e2fsprogs mokutil \
     mdadm \
-    systemd-networkd wireguard-tools \
+    systemd-networkd wireguard-tools kea \
     container-selinux k3s-selinux \
     policycoreutils-python-utils setools-console audit \
     cage wlr-randr wpewebkit \

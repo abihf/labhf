@@ -91,6 +91,20 @@ read -r -p "Install to (e.g. /dev/nvme0n1, empty to power off): " disk
 [[ -n $disk ]] || { systemctl poweroff; exit 0; }
 [[ -b $disk ]] || die "$disk is not a block device"
 
+# Nothing of the target may be in use. Unmount what is (e.g. an ESP the
+# firmware or a boot loader made systemd mount), then check.
+lsblk -lnpo NAME "$disk" | tac | while read -r p; do
+    findmnt -rno TARGET -S "$p" | while read -r m; do
+        say "unmounting $m ($p)"; umount "$m" || umount -l "$m"
+    done
+    swapoff "$p" 2>/dev/null || true
+done
+busy=$(lsblk -lnpo NAME,MOUNTPOINTS "$disk" | awk 'NF > 1')
+[[ -z $busy ]] || die "still in use on $disk: $busy"
+holders=$(find /sys/block/"$(basename "$(readlink -f "$disk")")"/ -path '*/holders/*' 2>/dev/null | head -3)
+[[ -z $holders ]] || die "$disk is held by: $holders"
+echo "labhf-installer: target $disk is free" > /dev/kmsg
+
 podman run --rm -it --privileged --pid=host --ipc=host --network=host \
     --security-opt label=disable \
     -v /var/lib/containers:/var/lib/containers -v /dev:/dev \

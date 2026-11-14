@@ -47,6 +47,9 @@ mkdir -p /etc/containers/containers.conf.d
 printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\nimage_copy_tmp_dir = "/var/lib/containers/tmp"\n' \
     > /etc/containers/containers.conf.d/50-installer.conf
 systemctl mask systemd-logind.service
+# started from systemd-boot, these would write to the target's ESP
+systemctl mask --force systemd-boot-random-seed.service systemd-bless-boot.service \
+    systemd-boot-check-no-failures.service systemd-boot-update.service
 cat > /etc/os-release <<'OS'
 NAME="labhf installer"
 ID=labhf-installer
