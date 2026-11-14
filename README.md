@@ -391,7 +391,7 @@ is touched before the disk prompt, and the pull is complete by then.
 
 | | |
 |---|---|
-| Settings | Kernel command line, signed, set at build time: `INSTALLER_REGISTRY` (`host:port`, plain HTTP), `INSTALLER_NET` (`dhcp` or `static:ADDR/PREFIX,GATEWAY`), `INSTALLER_TARGET` (where the installed system updates from, e.g. `ghcr.io/<owner>/labhf:latest`). abi's SSH key is baked in; passwords are typed at install time |
+| Settings | Kernel command line, signed, set at build time: `INSTALLER_REGISTRY` (`host:port`, plain HTTP), `INSTALLER_NET` (`dhcp` or `static:ADDR/PREFIX,GATEWAY[,DNS]`; a static address is also written into the installed system as `/etc/systemd/network/70-labhf-install.network`, for a LAN whose DHCP server is the machine being installed), `INSTALLER_TARGET` (where the installed system updates from, e.g. `ghcr.io/<owner>/labhf:latest`). abi's SSH key is baked in; passwords are typed at install time |
 | Registry | This PC: `make push`, then `make serve-install` (the registry read-only, so nobody on the LAN can push during the install; `make registry` makes it writable again). Plain HTTP is fine: a tampered image can't boot (signed UKI + composefs digest) |
 | USB disks | The installer has no `usb-storage`/`uas` drivers: USB disks (e.g. a data array) are invisible to it. USB NICs and keyboards work |
 | TPM | Signed with the same db key, so PCR 7 matches the installed system's policy. It extends PCR 15 at boot, which the policy requires to be zero: an installed disk can't be TPM-unlocked from the installer. No logins or shells either |

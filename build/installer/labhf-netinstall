@@ -4,7 +4,8 @@
 # Settings come from the signed kernel command line:
 #   labhf.registry=HOST:PORT        registry with labhf:latest (plain HTTP)
 #   labhf.target-imgref=REF         where the installed system updates from
-#   labhf.net=dhcp | static:ADDR/PREFIX,GATEWAY
+#   labhf.net=dhcp | static:ADDR/PREFIX,GATEWAY[,DNS]   for the installer and,
+#                                   if static, for the installed system too
 #   labhf.vm-test=1                 passwordless sudo for abi (QEMU test builds only)
 # The SSH key for abi is baked in at build time; passwords are typed here.
 # It pulls the image and runs the image's own labhf-install-disk, exactly as
@@ -59,9 +60,9 @@ mkdir -p /run/systemd/network
     if [[ $net == dhcp ]]; then
         echo 'DHCP=yes'
     else
-        n=${net#static:}
-        echo "Address=${n%%,*}"
-        echo "Gateway=${n#*,}"
+        IFS=, read -r n_addr n_gw _ <<< "${net#static:}"
+        echo "Address=$n_addr"
+        echo "Gateway=$n_gw"
     fi
 } > /run/systemd/network/10-installer.network
 networkctl reload
@@ -97,6 +98,7 @@ podman run --rm -it --privileged --pid=host --ipc=host --network=host \
     -e LABHF_TARGET_IMGREF="$target" \
     -e LABHF_SSH_PUBKEY="$key" \
     -e LABHF_VM_TEST="$vmtest" \
+    -e LABHF_NETWORK="$net" \
     "$image" labhf-install-disk "$disk" \
     || die "installation failed"
 

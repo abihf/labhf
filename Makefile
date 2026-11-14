@@ -27,7 +27,8 @@ SERIAL_CONSOLE ?= 0
 TREE_BUILD_FLAGS ?=
 
 # network installer UKI (make installer). Defaults: the QEMU VM.
-#   real PC: INSTALLER_REGISTRY=<this PC>:5000 INSTALLER_NET=static:ADDR/24,GW
+#   real PC: INSTALLER_REGISTRY=<this PC>:5000 INSTALLER_NET=static:ADDR/24,GW[,DNS]
+#            (static: also written into the installed system)
 #            INSTALLER_TARGET=ghcr.io/<owner>/labhf:latest
 INSTALLER_REGISTRY ?= $(VM_REGISTRY)
 INSTALLER_TARGET   ?= $(INSTALLER_REGISTRY)/labhf:latest

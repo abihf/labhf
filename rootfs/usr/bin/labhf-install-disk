@@ -18,6 +18,9 @@
 #   LABHF_LUKS_PASSWORD LUKS passphrase (prompted if unset); stays as the
 #                       fallback when TPM unlock fails, so make it strong
 #   LABHF_YES=1         don't ask before wiping
+#   LABHF_NETWORK       static:ADDR/PREFIX,GATEWAY[,DNS] writes a networkd file
+#                       for the installed system (default: the image's DHCP);
+#                       for a LAN whose DHCP server is the machine being installed
 #   LABHF_VM_TEST=1     passwordless sudo for abi; only scripts/vm-install.sh
 #                       sets this, never use it on a real machine
 set -euo pipefail
@@ -134,6 +137,27 @@ if [[ ${#etcs[@]} -eq 1 && -d ${etcs[0]} ]]; then
     # image's policy, with the deployment dir as the root (deploy/<id>/etc -> /etc).
     fc=/etc/selinux/targeted/contexts/files/file_contexts
     labelled=("$etc/labhf")
+    if [[ ${LABHF_NETWORK:-dhcp} == static:* ]]; then
+        IFS=, read -r n_addr n_gw n_dns <<< "${LABHF_NETWORK#static:}"
+        [[ -n $n_addr && -n $n_gw ]] || { echo "LABHF_NETWORK: static:ADDR/PREFIX,GATEWAY[,DNS]" >&2; exit 1; }
+        install -d -m 0755 "$etc/systemd/network"
+        # 70-: before the image's 80-labhf-wired.network (DHCP), after a
+        # restored machine file such as 20-wired.network, which then wins
+        cat > "$etc/systemd/network/70-labhf-install.network" <<NET
+# Written by labhf-install-disk (LABHF_NETWORK). A lower-numbered .network
+# for the same NICs replaces it; delete this file when you have one.
+[Match]
+Name=en* eth*
+
+[Network]
+Address=$n_addr
+Gateway=$n_gw
+DNS=${n_dns:-$n_gw}
+NET
+        chmod 0644 "$etc/systemd/network/70-labhf-install.network"
+        labelled+=("$etc/systemd/network/70-labhf-install.network")
+        echo ">> static network: $n_addr via $n_gw"
+    fi
     if [[ ${LABHF_VM_TEST:-0} == 1 ]]; then
         install -m 0440 /dev/stdin "$etc/sudoers.d/90-labhf-vm-test" <<<'abi ALL=(ALL) NOPASSWD: ALL'
         labelled+=("$etc/sudoers.d/90-labhf-vm-test")
