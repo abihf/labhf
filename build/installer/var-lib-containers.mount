@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The image is pulled into RAM. The initramfs root is a tmpfs capped at half
+# the RAM, too small for the image (~3G) plus podman's temporary copies, so the
+# image store gets its own tmpfs (pages are only used as they are filled).
+[Unit]
+Description=RAM for the pulled image
+DefaultDependencies=no
+Before=local-fs.target
+
+[Mount]
+What=tmpfs
+Where=/var/lib/containers
+Type=tmpfs
+Options=mode=0700,size=90%
+
+[Install]
+WantedBy=local-fs.target

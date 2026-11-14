@@ -45,7 +45,9 @@ the QEMU window (`make build SERIAL_CONSOLE=1` also puts it on the serial consol
 make tools        # helper container
 make keys         # once; keys/db.key is the crown jewel (or: make import-sbctl)
 make build        # -> localhost/labhf:latest
-make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords
+make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords (sudo)
+# or, without sudo, through the network installer (see "Network install"):
+#   make push && make installer INSTALLER_EXTRA="console=ttyS0,115200 labhf.vm-test=1" && make vm-netinstall
 make vm-run       # Secure Boot + swtpm; type the LUKS passphrase
 make vm-ssh       # ssh abi@localhost -p 2222
 ```
@@ -376,6 +378,36 @@ keys to `keys/replaced-<date>/`, and writes the usual `keys/` layout with
 `.auth` files that re-enroll exactly the current PK/KEK/db. Then update the
 CI secrets and rebuild. The machine itself no longer needs sbctl or the db
 key once it runs labhf: CI signs.
+
+## Network install
+
+`make installer` (after `make build`) writes `out/labhf-installer.efi`: one
+Secure Boot signed UKI (~95 MiB) whose initrd is a complete small system
+(Fedora minimal, systemd, networkd, podman; `Containerfile.installer`).
+Copied to the target's ESP and picked in the boot menu, it boots from RAM,
+brings up the network, pulls `labhf:latest` from a registry and runs the
+image's own `labhf-install-disk`, as from a live USB. Nothing on the target
+is touched before the disk prompt, and the pull is complete by then.
+
+| | |
+|---|---|
+| Settings | Kernel command line, signed, set at build time: `INSTALLER_REGISTRY` (`host:port`, plain HTTP), `INSTALLER_NET` (`dhcp` or `static:ADDR/PREFIX,GATEWAY`), `INSTALLER_TARGET` (where the installed system updates from, e.g. `ghcr.io/<owner>/labhf:latest`). abi's SSH key is baked in; passwords are typed at install time |
+| Registry | This PC: `make push`, then `make serve-install` (the registry read-only, so nobody on the LAN can push during the install; `make registry` makes it writable again). Plain HTTP is fine: a tampered image can't boot (signed UKI + composefs digest) |
+| USB disks | The installer has no `usb-storage`/`uas` drivers: USB disks (e.g. a data array) are invisible to it. USB NICs and keyboards work |
+| TPM | Signed with the same db key, so PCR 7 matches the installed system's policy. It extends PCR 15 at boot, which the policy requires to be zero: an installed disk can't be TPM-unlocked from the installer. No logins or shells either |
+| RAM | Image (~3G) and podman's temporary copies live in RAM (tmpfs up to 90%): 8G is enough |
+| Size | The build fails above 250 MiB (`INSTALLER_MAX_MB`): it has to fit in an existing ESP next to what is there |
+
+`make vm-netinstall` does the same in QEMU with an empty `vm/disk.raw`, the
+installer on a small FAT disk standing in for the target's ESP, and a USB
+stick the installer must not see; all rootless. It refuses to replace an
+installed `vm/disk.raw` unless `FORCE=1`. `labhf.vm-test=1` (VM builds only)
+gives abi passwordless sudo, for `scripts/vm-check.sh`:
+`ssh -p 2222 abi@localhost sudo bash -s < scripts/vm-check.sh`.
+
+Verified in QEMU: Secure Boot boot of the installer, PCR 15 extended, DHCP,
+pull, USB stick not listed, install, reboot into the installed system, and
+`vm-check.sh` all passing on it.
 
 ## Installing on the real PC
 

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The installer is signed with the same db key as labhf, so PCR 7 matches and
+# labhf's TPM policy (PCR 0,2,3,5,7 + 15=0) would otherwise let this
+# environment unseal an installed system's state key. Extend PCR 15 first
+# thing: the policy then fails. Refuse to go on if a TPM exists but this fails.
+[Unit]
+Description=Extend PCR 15 (no TPM unlock of labhf disks from the installer)
+DefaultDependencies=no
+After=systemd-modules-load.service dev-tpmrm0.device
+Wants=dev-tpmrm0.device
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash -c 'if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then /usr/lib/systemd/systemd-pcrextend --pcr=15 labhf-installer; else echo "no TPM"; fi'
+
+[Install]
+WantedBy=sysinit.target

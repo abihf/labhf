@@ -3,6 +3,8 @@
 /keys
 # migration backups (symlink to a private directory)
 /backup
+# build output (installer UKI)
+/out
 vm/
 *.raw
 *.qcow2

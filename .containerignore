@@ -2,5 +2,7 @@
 keys/*
 !keys/auth/
 vm/
+out/
+backup
 .git/
 MIGRATION.md

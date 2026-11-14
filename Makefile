@@ -26,6 +26,20 @@ SERIAL_CONSOLE ?= 0
 # e.g. --no-cache: rebuild everything, as CI does on a fresh runner
 TREE_BUILD_FLAGS ?=
 
+# network installer UKI (make installer). Defaults: the QEMU VM.
+#   real PC: INSTALLER_REGISTRY=<this PC>:5000 INSTALLER_NET=static:ADDR/24,GW
+#            INSTALLER_TARGET=ghcr.io/<owner>/labhf:latest
+INSTALLER_REGISTRY ?= $(VM_REGISTRY)
+INSTALLER_TARGET   ?= $(INSTALLER_REGISTRY)/labhf:latest
+INSTALLER_NET      ?= dhcp
+INSTALLER_EXTRA    ?=
+INSTALLER_CMDLINE   = rdinit=/usr/lib/systemd/systemd console=tty0 selinux=0 audit=0 \
+                      systemd.firstboot=off labhf.registry=$(INSTALLER_REGISTRY) \
+                      labhf.target-imgref=$(INSTALLER_TARGET) labhf.net=$(INSTALLER_NET) \
+                      $(INSTALLER_EXTRA)
+OUT         ?= out
+DISK_SIZE   ?= 80G
+
 SHELL       := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 SSH_PUBKEY  ?= $(shell cat $(firstword $(wildcard $(HOME)/.ssh/id_ed25519.pub $(HOME)/.ssh/id_ecdsa.pub $(HOME)/.ssh/id_rsa.pub)) 2>/dev/null)
@@ -43,7 +57,7 @@ TOOLS_RUN = $(PODMAN) run --rm $(TOOLS_USER) \
             --security-opt label=disable -v $(CURDIR):/work -w /work \
             $(if $(KEYS_DIR),-v $(KEYS_DIR):$(KEYS_DIR)) $(TOOLS_IMAGE)
 
-.PHONY: help tools keys import-sbctl build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
+.PHONY: help tools keys import-sbctl installer vm-netinstall serve-install build lint vm-vars vm-install vm-run vm-ssh vm-clean clean clean-cache registry push
 
 help:
 	@echo "make tools       build helper container (openssl, sbsigntools, virt-fw-vars)"
@@ -54,6 +68,9 @@ help:
 	@echo "make vm-install  install image to vm/disk.raw (LUKS root)"
 	@echo "make vm-run      boot it (swtpm, Secure Boot); ssh: make vm-ssh"
 	@echo "make registry push  serve the image to the VM at $(VM_REGISTRY)/labhf:latest"
+	@echo "make installer  network installer UKI -> $(OUT)/labhf-installer.efi (after make build)"
+	@echo "make vm-netinstall  fresh VM disk, installed by the installer UKI (no sudo)"
+	@echo "make serve-install  registry read-only for an install over the LAN"
 
 tools:
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) -t $(TOOLS_IMAGE) -f Containerfile.tools .
@@ -123,11 +140,49 @@ clean-cache:
 	$(PODMAN) system prune --build -f
 
 # plain-HTTP registry on the host; the VM pulls from $(VM_REGISTRY)
+# writable: for `make push` (recreated, so it is never left read-only)
 registry:
-	$(PODMAN) container exists labhf-registry || \
-	  $(PODMAN) run -d --name labhf-registry -p 5000:5000 \
-	    -v labhf-registry:/var/lib/registry docker.io/library/registry:2
-	$(PODMAN) start labhf-registry
+	$(PODMAN) rm -f labhf-registry >/dev/null
+	$(PODMAN) run -d --name labhf-registry -p 5000:5000 \
+	  -v labhf-registry:/var/lib/registry docker.io/library/registry:2
+
+# read-only while another machine installs from it over the LAN: plain HTTP
+# and no auth, so nobody else can push. `make registry` makes it writable again.
+serve-install:
+	$(PODMAN) rm -f labhf-registry >/dev/null
+	$(PODMAN) run -d --name labhf-registry -p 5000:5000 \
+	  -e REGISTRY_STORAGE_MAINTENANCE_READONLY='{"enabled":true}' \
+	  -v labhf-registry:/var/lib/registry docker.io/library/registry:2
+	@echo "serving read-only: $$(hostname -I | cut -d' ' -f1):5000/labhf:latest"
+
+# Secure Boot signed network installer (Containerfile.installer). Uses the
+# tree from `make build`. No secrets inside: passwords are typed at install.
+installer: keys/db.key
+	mkdir -p $(OUT)/installer-ctx
+	printf '%s\n' "$(SSH_PUBKEY)" > $(OUT)/installer-ctx/ssh.pub
+	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --build-arg TREE=$(TREE_IMAGE) \
+	  --build-arg INSTALLER_CMDLINE="$(strip $(INSTALLER_CMDLINE))" \
+	  --build-context installer=$(OUT)/installer-ctx \
+	  --security-opt label=disable \
+	  --target output -o type=local,dest=$(OUT) -f Containerfile.installer .
+	@ls -lh $(OUT)/labhf-installer.efi
+
+# a small FAT disk with the installer as the removable-media boot path,
+# standing in for the target's existing ESP (mtools: no loop device)
+vm/installer-esp.img: $(OUT)/labhf-installer.efi
+	$(TOOLS_RUN) sh -c 'rm -f $@ && mkfs.vfat -C -n LABHFINST $@ 307200 >/dev/null && \
+	  mmd -i $@ ::/EFI ::/EFI/BOOT && mcopy -i $@ $< ::/EFI/BOOT/BOOTX64.EFI && mdir -i $@ ::/EFI/BOOT'
+
+# fresh VM install through the installer UKI, all without sudo:
+#   make build push && make installer INSTALLER_EXTRA="console=ttyS0,115200 labhf.vm-test=1" && make vm-netinstall
+# Replaces vm/disk.raw: refuses if it already holds an installed system,
+# unless FORCE=1.
+vm-netinstall: vm/OVMF_VARS.qcow2 vm/installer-esp.img
+	@if [ -s vm/disk.raw ] && [ "$(FORCE)" != 1 ] && sfdisk -d vm/disk.raw >/dev/null 2>&1; then \
+	  echo "vm/disk.raw has a partition table (an installed VM). make vm-netinstall FORCE=1 to replace it."; exit 1; fi
+	rm -f vm/disk.raw && truncate -s $(DISK_SIZE) vm/disk.raw
+	VM_INSTALLER=1 VM_MEM=8G scripts/vm-run.sh
 
 push: registry
 	$(PODMAN) push --tls-verify=false $(PUSH_ARGS) $(IMAGE) docker://$(REGISTRY)/labhf:latest

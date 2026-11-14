@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=labhf network installer on tty1
+After=systemd-networkd.service labhf-installer-pcr.service var-lib-containers.mount
+Requires=var-lib-containers.mount
+Wants=systemd-networkd.service
+Requires=labhf-installer-pcr.service
+Conflicts=getty@tty1.service autovt@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/labhf-netinstall
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Environment=TERM=linux
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

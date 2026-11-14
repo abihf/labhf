@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Network installer UKI (`make installer`): one Secure Boot signed EFI file
+# whose initrd is a complete small system. systemd runs from RAM, brings up
+# the network, pulls labhf from a registry and runs the image's own
+# labhf-install-disk. Nothing unsigned is loaded before that.
+#
+#   tree               the labhf tree (kernel, modules, firmware), from make build
+#   installer-modules  kernel + needed modules + NIC firmware
+#   installer-root     Fedora minimal + systemd + podman + the installer
+#   signer / uki       cpio + ukify, signed offline with the db key
+ARG FEDORA=45
+ARG BASE=quay.io/fedora/fedora-bootc:${FEDORA}
+ARG TREE=localhost/labhf-tree:build
+
+FROM ${TREE} AS tree
+
+FROM tree AS installer-modules
+RUN --network=none \
+    --mount=type=bind,source=build/installer/modules.sh,target=/ctx/modules.sh \
+    bash /ctx/modules.sh
+
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA} AS installer-root
+RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
+    dnf -y --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+        install systemd systemd-udev systemd-networkd kmod util-linux iproute \
+                podman crun conmon containers-common curl less procps-ng
+COPY --from=installer-modules /out/usr/ /usr/
+COPY build/installer/labhf-netinstall /usr/bin/labhf-netinstall
+COPY build/installer/labhf-netinstall.service build/installer/labhf-installer-pcr.service \
+     build/installer/var-lib-containers.mount /usr/lib/systemd/system/
+# abi's public key, from the "installer" build context make prepares
+COPY --from=installer ssh.pub /usr/lib/labhf-installer/ssh.pub
+RUN --network=none <<'EOF'
+set -euxo pipefail
+depmod -a "$(ls /usr/lib/modules)"
+chmod 0755 /usr/bin/labhf-netinstall
+ln -sf usr/lib/systemd/systemd /init
+systemctl set-default multi-user.target
+systemctl enable systemd-networkd.service labhf-netinstall.service labhf-installer-pcr.service \
+    var-lib-containers.mount
+# no logins at all: the console belongs to the installer
+systemctl mask --force getty@.service serial-getty@.service autovt@.service \
+    systemd-firstboot.service console-getty.service debug-shell.service
+passwd -l root
+# no D-Bus here: podman without systemd's cgroup manager or journald events
+mkdir -p /etc/containers/containers.conf.d
+printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\nimage_copy_tmp_dir = "/var/lib/containers/tmp"\n' \
+    > /etc/containers/containers.conf.d/50-installer.conf
+systemctl mask systemd-logind.service
+cat > /etc/os-release <<'OS'
+NAME="labhf installer"
+ID=labhf-installer
+PRETTY_NAME="labhf network installer"
+OS
+# smaller: nothing below is used at install time
+rm -rf /var/cache/* /var/log/* /usr/share/doc /usr/share/man /usr/share/info \
+       /usr/share/licenses /usr/share/locale/[!e]* /usr/lib/.build-id
+EOF
+
+FROM ${BASE} AS signer
+RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
+    dnf -y --setopt=keepcache=True install systemd-ukify systemd-boot-unsigned \
+        sbsigntools cpio zstd python3
+
+FROM signer AS uki
+ARG SB_CERT_SHA256
+ARG INSTALLER_CMDLINE
+ARG INSTALLER_MAX_MB=250
+RUN --network=none \
+    --mount=type=bind,from=installer-root,target=/r \
+    --mount=type=bind,from=installer-modules,source=/out,target=/m \
+    --mount=type=secret,id=sb_key \
+    --mount=type=secret,id=sb_cert \
+    --mount=type=tmpfs,target=/tmp \
+    <<'EOF'
+set -euxo pipefail
+test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256"
+mkdir -p /out
+# the root filesystem as a newc cpio; /dev/console added as a second archive
+# (a rootless build can't mknod it; the kernel concatenates archives)
+(cd /r && find . -xdev -print0 | cpio --null -o -H newc --quiet) > /tmp/root.cpio
+python3 - <<'PY'
+def entry(name, mode, rmaj=0, rmin=0, data=b''):
+    name = name.encode() + b'\0'
+    hdr = '070701' + ''.join('%08X' % v for v in (
+        0, mode, 0, 0, 1, 0, len(data), 0, 0, rmaj, rmin, len(name), 0))
+    out = hdr.encode() + name
+    out += b'\0' * (-len(out) % 4) + data
+    return out + b'\0' * (-len(out) % 4)
+blob = entry('dev', 0o040755) + entry('dev/console', 0o020600, 5, 1) + entry('TRAILER!!!', 0)
+open('/tmp/dev.cpio', 'wb').write(blob + b'\0' * (-len(blob) % 512))
+PY
+cat /tmp/root.cpio /tmp/dev.cpio | zstd -19 -T0 -q > /tmp/initrd.cpio.zst
+printf 'NAME="labhf installer"\nID=labhf-installer\nPRETTY_NAME="labhf network installer"\n' > /tmp/os-release
+ukify build \
+    --linux /m/vmlinuz \
+    --initrd /tmp/initrd.cpio.zst \
+    --uname "$(cat /m/kver)" \
+    --os-release @/tmp/os-release \
+    --cmdline "$INSTALLER_CMDLINE" \
+    --signtool systemd-sbsign --no-sign-kernel \
+    --secureboot-private-key /run/secrets/sb_key \
+    --secureboot-certificate /run/secrets/sb_cert \
+    --output /out/labhf-installer.efi
+sbverify --cert /run/secrets/sb_cert /out/labhf-installer.efi
+size=$(( $(stat -c %s /out/labhf-installer.efi) / 1048576 ))
+echo "installer UKI: ${size} MiB (max ${INSTALLER_MAX_MB})"
+(( size <= INSTALLER_MAX_MB ))
+EOF
+
+FROM scratch AS output
+COPY --from=uki /out/labhf-installer.efi /

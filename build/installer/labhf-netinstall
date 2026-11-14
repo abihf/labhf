@@ -1,0 +1,105 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# labhf network installer, runs on tty1 from the installer UKI (all in RAM).
+# Settings come from the signed kernel command line:
+#   labhf.registry=HOST:PORT        registry with labhf:latest (plain HTTP)
+#   labhf.target-imgref=REF         where the installed system updates from
+#   labhf.net=dhcp | static:ADDR/PREFIX,GATEWAY
+#   labhf.vm-test=1                 passwordless sudo for abi (QEMU test builds only)
+# The SSH key for abi is baked in at build time; passwords are typed here.
+# It pulls the image and runs the image's own labhf-install-disk, exactly as
+# from a live USB.
+set -uo pipefail
+
+param() {  # name [default]
+    local v
+    v=$(tr ' ' '\n' < /proc/cmdline | sed -n "s/^$1=//p" | tail -1)
+    printf '%s' "${v:-${2:-}}"
+}
+say() { printf '\n\e[1m>> %s\e[0m\n' "$*"; echo "labhf-installer: $*" > /dev/kmsg; }
+logged() {  # run a command; on failure copy its last output lines to the kernel log
+    local log=/run/labhf-installer.log rc
+    "$@" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    if (( rc != 0 )); then
+        tail -n 8 "$log" | while IFS= read -r l; do echo "labhf-installer: | ${l:0:200}" > /dev/kmsg; done
+    fi
+    return "$rc"
+}
+die() { say "ERROR: $*"; echo "labhf-installer: ERROR: $*" > /dev/kmsg
+        read -r -p "Press Enter to power off." _; systemctl poweroff; exit 1; }
+
+registry=$(param labhf.registry)
+image=$registry/labhf:latest
+target=$(param labhf.target-imgref "$image")
+net=$(param labhf.net dhcp)
+vmtest=$(param labhf.vm-test 0)
+key=$(cat /usr/lib/labhf-installer/ssh.pub 2>/dev/null)
+[[ -n $registry ]] || die "no labhf.registry= on the kernel command line"
+
+clear
+cat <<EOF
+labhf network installer
+  image     $image
+  updates   $target
+  network   $net
+  ssh key   ${key:+${key:0:40}...}
+
+Only internal disks are visible here (no USB storage drivers).
+EOF
+
+# PCR 15 was extended at boot (labhf-installer-pcr.service), so a TPM-bound
+# labhf disk can't be unlocked from this environment.
+pcr15=$(systemd-analyze pcrs 15 2>/dev/null | awk '$1=="15" {print $NF}')
+say "PCR 15: ${pcr15:-no TPM}"
+
+# --- network -----------------------------------------------------------------
+mkdir -p /run/systemd/network
+{
+    printf '[Match]\nName=en* eth*\n\n[Network]\n'
+    if [[ $net == dhcp ]]; then
+        echo 'DHCP=yes'
+    else
+        n=${net#static:}
+        echo "Address=${n%%,*}"
+        echo "Gateway=${n#*,}"
+    fi
+} > /run/systemd/network/10-installer.network
+networkctl reload
+say "waiting for the network and $registry"
+for i in $(seq 1 120); do
+    curl -fsS -m 3 "http://$registry/v2/" >/dev/null 2>&1 && break
+    (( i % 10 == 0 )) && networkctl --no-pager list | sed 's/^/   /'
+    sleep 1
+done
+curl -fsS -m 3 "http://$registry/v2/" >/dev/null || die "registry $registry not reachable"
+ip -br addr | grep -v '^lo' | sed 's/^/   /'
+
+# --- image -------------------------------------------------------------------
+mkdir -p /etc/containers/registries.conf.d
+printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$registry" \
+    > /etc/containers/registries.conf.d/50-labhf-installer.conf
+say "pulling $image"
+mkdir -p /var/lib/containers/tmp
+logged podman pull "$image" || die "pull failed"
+
+# --- disk --------------------------------------------------------------------
+say "disks"
+lsblk -d -e 7,11,251,252 -o NAME,SIZE,MODEL,SERIAL,TRAN | tee /run/disks.txt | sed 's/^/   /'
+while IFS= read -r l; do echo "labhf-installer: disk: $l" > /dev/kmsg; done < /run/disks.txt
+read -r -p "Install to (e.g. /dev/nvme0n1, empty to power off): " disk
+[[ -n $disk ]] || { systemctl poweroff; exit 0; }
+[[ -b $disk ]] || die "$disk is not a block device"
+
+podman run --rm -it --privileged --pid=host --ipc=host --network=host \
+    --security-opt label=disable \
+    -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
+    -e LABHF_IMAGE="$image" \
+    -e LABHF_TARGET_IMGREF="$target" \
+    -e LABHF_SSH_PUBKEY="$key" \
+    -e LABHF_VM_TEST="$vmtest" \
+    "$image" labhf-install-disk "$disk" \
+    || die "installation failed"
+
+say "installed. Remove nothing; the installer was in RAM."
+read -r -p "Press Enter to reboot into labhf." _
+systemctl reboot
