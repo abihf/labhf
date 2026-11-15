@@ -1,15 +1,13 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# CI: build the sealed image and push it. Runs inside quay.io/podman/stable
-# (privileged) so CI uses a current podman/buildah, like a local `make build`.
+# CI: build the sealed image and push it. Runs as root on the runner, with
+# podman from redhat-actions/podman-install (Ubuntu 26.04's podman 5.x).
 #
 # Env: IMAGE_REPO (ghcr.io/<owner>/labhf), TAGS (space separated),
 #      REGISTRY_USER, REGISTRY_TOKEN, BUILD_LABELS (extra --label flags).
 # Layer cache of the Containerfile stages: ${IMAGE_REPO}-cache (one tag per step).
 # Expects keys/db.key, keys/db.crt and keys/auth/*.auth in the checkout.
 set -euo pipefail
-
-dnf -y -q install make >/dev/null
 
 # logged in for the whole build: the layer cache lives in ghcr too
 podman login ghcr.io -u "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_TOKEN"

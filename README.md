@@ -338,8 +338,9 @@ in the VM. `sudo bootc rollback && sudo reboot` returns to the previous image.
 [`.github/workflows/image.yml`](.github/workflows/image.yml) builds the sealed
 image on every push to `main`, weekly (Fedora/NVIDIA updates) and on demand,
 and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
-`make build` inside `quay.io/podman/stable` (a current podman, like local
-builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
+`make build` directly on the runner, with Ubuntu 26.04's podman installed by
+[`redhat-actions/podman-install`](https://github.com/redhat-actions/podman-install)
+(rootful, image storage on `/mnt`), via [`scripts/ci-build.sh`](scripts/ci-build.sh),
 and fails if the db key turns up anywhere in the image.
 
 The layer cache of the `Containerfile` build (up to `rootfs`) is kept in
@@ -369,7 +370,7 @@ tar -C keys -cz auth | base64 -w0 | gh secret set SB_AUTH_TGZ   # public .auth f
 Anyone with write access to the repo's workflows can use the db key, and an
 image signed with it boots on the PC: keep the repo's collaborators and
 Actions settings tight. Pull requests are never built with the secrets.
-The checkout action and the podman image are pinned by commit / digest
+The checkout and podman-install actions are pinned by commit
 (bump them deliberately), since this job holds the key.
 
 #### Where the db key is used
