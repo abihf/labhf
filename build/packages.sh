@@ -117,15 +117,27 @@ rm -rf /boot/grub2 /etc/grub.d /etc/default/grub /etc/systemd/user/timers.target
 # never runs; it alone keeps GTK3 and its libraries (~110M). Remove it, then
 # what became unneeded with it (only that: compared before and after).
 unneeded() { dnf -q repoquery --installed --unneeded --qf '%{name}\n' | sort -u; }
-before=$(unneeded)
+# users and groups the packages' sysusers.d files declare
+declared() { cat /usr/lib/sysusers.d/*.conf | awk '$1 ~ /^[ug]/ {print $2}' | sort -u; }
+before=$(unneeded) users_before=$(declared)
 rpm -e --nodeps nvidia-settings
 mapfile -t orphans < <(comm -13 <(echo "$before") <(unneeded))
 echo "removed with nvidia-settings: ${orphans[*]:-none}"
 (( ${#orphans[@]} )) && rpm -e "${orphans[@]}"
+# rpm -e leaves the accounts they created (pipewire, rtkit, ...) in /etc;
+# bootc lint rejects accounts no sysusers.d file declares
+for u in $(comm -23 <(echo "$users_before") <(declared)); do
+    if getent passwd "$u" >/dev/null; then userdel "$u"; fi
+    if getent group "$u" >/dev/null; then groupdel "$u"; fi
+done
 rpm -q "${keep[@]}"
-# Headless now (no kiosk): log any GL/media stack something still pulls in
+# Headless now (no kiosk): log any GL/media stack something still pulls in,
+# and what requires it (by any of its provides, e.g. mesa-dri-drivers(x86-64))
 for p in mesa-dri-drivers llvm-libs gtk3 gstreamer1 pipewire-libs; do
-    rpm -q "$p" >/dev/null && echo "still installed: $p, needed by: $(rpm -q --whatrequires "$p" --qf '%{NAME} ' 2>/dev/null)"
+    rpm -q "$p" >/dev/null || continue
+    by=$(rpm -q --provides "$p" | awk '{print $1}' | sort -u |
+         xargs -r -d '\n' rpm -q --whatrequires --qf '%{NAME}\n' 2>/dev/null | grep -v '^no package' | sort -u | tr '\n' ' ')
+    echo "still installed: $p, required by: ${by:-nothing}"
 done
 
 # akmods/kmods leave units around that try to build at boot
