@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# After systemd's 60-block-scheduler.rules (bfq for every sd* disk).
+# md RAID5/6 stripe cache, default 256: parity writes stall on it. Costs
+# 4096 pages x 4 KiB x member disks of RAM (64 MiB for 4 disks).
+SUBSYSTEM=="block", KERNEL=="md*", ACTION=="add|change", TEST=="md/stripe_cache_size", \
+  ATTR{md/stripe_cache_size}="4096"
+# Rotational disks (USB RAID members, backup): mq-deadline, less CPU per I/O
+# than bfq and md does its own merging across members
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="sd*[!0-9]", \
+  ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="mq-deadline"

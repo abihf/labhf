@@ -19,6 +19,10 @@ systemctl enable \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
     sysroot-state.mount
+# nvidia-persistenced: started by udev when a GPU binds (70-labhf-nvidia.rules).
+# nvidia-powerd: Dynamic Boost (laptops, CPU<->GPU power sharing), enabled by
+# its RPM preset
+systemctl disable nvidia-powerd.service
 systemctl set-default multi-user.target
 # gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
 # must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.

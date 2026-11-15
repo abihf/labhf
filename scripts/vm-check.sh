@@ -32,6 +32,14 @@ for m in firewire-core thunderbolt bluetooth sctp udf esp4 l2tp_core nfs sunrpc;
 done; echo
 echo "nvidia signer: $(modinfo -F signer nvidia)"
 
+sec "performance"
+tr ' ' '\n' < /proc/cmdline | grep -E '^(init_on_|iommu\.strict)' | tr '\n' ' '; echo
+sysctl -n net.ipv4.tcp_congestion_control net.core.default_qdisc | tr '\n' ' '; echo
+echo "persistenced: $(systemctl is-enabled nvidia-persistenced) $(systemctl is-active nvidia-persistenced); powerd: $(systemctl is-enabled nvidia-powerd)"
+udevadm verify /usr/lib/udev/rules.d/6?-labhf-*.rules 2>&1 | grep -E 'Fail|Success' | tr -s ' ' | tr '\n' ' '; echo
+grep -H . /sys/devices/system/cpu/cpu0/cpufreq/{scaling_driver,scaling_governor,energy_performance_preference} \
+    /sys/block/md*/md/stripe_cache_size /sys/block/sd*/queue/scheduler 2>/dev/null
+
 sec "access"
 /usr/sbin/sshd -T 2>/dev/null | grep -iE '^(permitrootlogin|allowusers|passwordauthentication|maxauthtries|allowtcpforwarding) ' | tr '\n' ';'; echo
 ls /etc/ssh/authorized_keys.d/ | tr '\n' ' '; echo

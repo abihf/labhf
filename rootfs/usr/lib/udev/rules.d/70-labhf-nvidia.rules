@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nvidia-persistenced once the driver has bound a GPU (none in QEMU: never
+# started there): CUDA pods start without re-initialising the GPU, which
+# idles in P8 instead of being torn down and brought up per client.
+ACTION=="bind", SUBSYSTEM=="pci", DRIVER=="nvidia", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="nvidia-persistenced.service"

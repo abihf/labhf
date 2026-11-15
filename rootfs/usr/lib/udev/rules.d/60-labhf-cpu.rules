@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# amd-pstate (active/EPP mode, governor powersave): near-full boost when busy,
+# low clocks at idle, instead of whatever EPP the firmware leaves. No-op
+# without cpufreq (QEMU).
+ACTION=="add", SUBSYSTEM=="cpu", TEST=="cpufreq/energy_performance_preference", \
+  ATTR{cpufreq/energy_performance_preference}="balance_performance"

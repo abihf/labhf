@@ -1,12 +1,16 @@
-# Memory hardening
-# DMA: strict IOTLB, no identity mapping, block PCI bus mastering before the
-# kernel's IOMMU setup.
+# Memory hardening: zero pages on allocation (init_on_alloc); not also on free
+# (init_on_free zeroes every freed page: a few % on k3s/containerd for little
+# extra, since init_on_alloc already keeps old data out of new allocations).
+# DMA: IOMMU forced on, every device isolated, no identity mapping, PCI bus
+# mastering blocked before the kernel's IOMMU setup. IOTLB flushes are lazy
+# (iommu.strict=0, batched): strict flushing on every unmap slows NIC, NVMe and
+# USB-disk I/O; a device keeps a stale mapping for a few ms at most.
 # Initrd: never a shell, even after `state` is unlocked.
 # Partly from secureblue's kargs.d/10-secureblue.toml; left out of it: forced
-# CPU mitigations and nosmt (performance), slab_debug, loglevel=0.
+# CPU mitigations, nosmt, init_on_free and strict IOTLB (performance),
+# slab_debug, loglevel=0.
 kargs = [
   "init_on_alloc=1",
-  "init_on_free=1",
   "slab_nomerge",
   "page_alloc.shuffle=1",
   "randomize_kstack_offset=on",
@@ -31,7 +35,7 @@ kargs = [
   "iommu=force",
   "intel_iommu=on",
   "amd_iommu=force_isolation",
-  "iommu.strict=1",
+  "iommu.strict=0",
   "iommu.passthrough=0",
   "efi=disable_early_pci_dma",
   # sshd only on the network port, never auto-bound to vsock/AF_UNIX
