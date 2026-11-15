@@ -5,7 +5,8 @@
 #
 #   nvidia-build stage (base + RPM Fusion):
 #     deps        online, no key: RPM Fusion repos, kernel-devel, akmod-nvidia
-#     build       --network=none, no key: akmods -> unsigned kmod RPM in /out
+#     build       --network=none, no key: rpmbuild of the akmod SRPM ->
+#                 unsigned kmod RPM in /out
 #   nvidia-sign stage (clean base, Fedora packages only):
 #     sign-deps   online, no key: kernel-devel (for scripts/sign-file), cpio
 #     sign        --network=none, key: sign every .ko from the RPM with
@@ -39,15 +40,32 @@ deps)
     install_kernel_devel
     # Build the open kernel modules (Turing and newer GPUs)
     echo '%_with_kmod_nvidia_open 1' > /etc/rpm/macros.nvidia-kmod
+    # CI builds the kmod RPM afresh every run. Build time (and so the mtimes
+    # chunkah gives its files) and build host from the spec, not the clock or
+    # the runner: the same driver gives the same layer and rpmdb entry.
+    cat >> /etc/rpm/macros.nvidia-kmod <<'MACROS'
+%source_date_epoch_from_changelog 1
+%use_source_date_epoch_as_buildtime 1
+%clamp_mtime_to_source_date_epoch 1
+%_buildhost labhf
+MACROS
     dnf -y install akmods akmod-nvidia
     ;;
 
 build)
     # No key pair => kmodtool leaves the modules unsigned
     rm -rf /etc/pki/akmods/private/* /etc/pki/akmods/certs/*
-    akmods --force --kernels "${kver}" --kmod nvidia
+    # akmodsbuild's rpmbuild call, but in a fixed directory: akmods builds in
+    # a random mktemp dir, whose path ends up in each module's GNU build-id
+    # (the only difference between two builds), and so in the signature too
+    top=/tmp/kmod-nvidia
+    rpmbuild \
+        --define "_topdir ${top}" \
+        --define "kernels ${kver}" \
+        --target "$(uname -m)" \
+        --rebuild /usr/src/akmods/nvidia-kmod.latest
     mkdir -p /out
-    cp -v /var/cache/akmods/nvidia/kmod-nvidia-"${kver}"-*.rpm /out/
+    cp -v "${top}"/RPMS/*/kmod-nvidia-"${kver}"-*.rpm /out/
     rpm -q --qf '%{EPOCH}:%{VERSION}-%{RELEASE}\n' akmod-nvidia | sed 's/(none)://' > /out/nvidia-version
     cat /out/nvidia-version
     ;;

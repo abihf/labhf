@@ -50,7 +50,7 @@ kargs = ["console=ttyS0,115200"]
 TOML
 fi
 
-# systemd-boot is signed in the sdboot-sign stage (Containerfile): this tree
+# systemd-boot is signed in the sdboot-sign stage (Containerfile.seal): this tree
 # has third-party packages installed, so the db key is never mounted here.
 
 # --- initramfs (bootc composefs module, LUKS + TPM2) -------------------------
@@ -64,7 +64,11 @@ export DRACUT_NO_XATTR=1
 # /root -> var/roothome; dracut's base module copies /root and fails if the
 # target is missing. The dir is created by tmpfiles at boot, so remove it again.
 roothome_tmp=0; [[ -d /var/roothome ]] || { mkdir -p /var/roothome; roothome_tmp=1; }
-dracut --force --kver "$kver" "/usr/lib/modules/${kver}/initramfs.img"
+# reproducible="yes" (01-dist.conf) clamps the archive's mtimes to
+# SOURCE_DATE_EPOCH: the package set's, so the same packages and config give
+# the same initramfs (and its layer) on every build
+SOURCE_DATE_EPOCH=$(/ctx/build/source-date-epoch.sh) \
+    dracut --force --kver "$kver" "/usr/lib/modules/${kver}/initramfs.img"
 (( roothome_tmp )) && rmdir /var/roothome
 lsinitrd "/usr/lib/modules/${kver}/initramfs.img" | grep -E 'bootc|systemd-cryptsetup|libtss2-esys|sysroot-state|crypttab' | head -20
 lsinitrd -f /etc/crypttab "/usr/lib/modules/${kver}/initramfs.img"
@@ -116,6 +120,9 @@ FAILLOCK
 # keep /ostree -> sysroot/ostree (bootc lint baseimage-root requires it)
 find /var/log /var/cache /var/lib -mindepth 1 \
     -not -path '/var/lib/rpm-state*' -delete 2>/dev/null || true
+# dnf's transaction history: build timestamps (a new dnf5 layer every build),
+# and nobody runs dnf on the sealed root
+rm -f /usr/lib/sysimage/libdnf5/transaction_history.sqlite*
 rm -rf /var/lib/rpm-state
 # /boot must be empty in the tree; the sealer stage adds the signed UKI
 rm -rf /boot && mkdir -p /boot

@@ -16,9 +16,10 @@ BUILD_ARGS  ?=
 CHUNKAH_IMAGE ?= quay.io/coreos/chunkah:v0.7.1@sha256:71e593421c5de7dcc7c8c5c50e98d3bac572055a76f399f61a491d123c20a523
 TREE_IMAGE    ?= localhost/labhf-tree:build
 CHUNKED_IMAGE ?= localhost/labhf-chunked:build
-# mtimes newer than this are clamped, so a rebuild of the same commit gives
-# the same layers (generated files would otherwise change every build)
-SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || date +%s)
+# chunkah clamps files without a package build time to SOURCE_DATE_EPOCH.
+# Default: the newest package build time in the tree (build/source-date-epoch.sh),
+# so layers change with packages, not with every commit.
+SOURCE_DATE_EPOCH ?=
 PUSH_ARGS   ?= --compression-format zstd
 # 1: add console=ttyS0 (boot log + passphrase prompt on the serial console),
 # for debugging in QEMU. Off in the image that ships.
@@ -101,9 +102,13 @@ build: keys/db.key
 	  --security-opt label=disable \
 	  --build-context keys=$(KEYS_DIR) \
 	  $(TREE_BUILD_FLAGS) --target tree -t $(TREE_IMAGE) -f Containerfile .
+	sde=$(or $(SOURCE_DATE_EPOCH),$$($(PODMAN) run --rm --network=none --security-opt label=disable \
+	  -v $(CURDIR)/build/source-date-epoch.sh:/source-date-epoch.sh:ro \
+	  $(TREE_IMAGE) /source-date-epoch.sh)); \
+	echo "SOURCE_DATE_EPOCH=$$sde ($$(date -ud @$$sde))"; \
 	$(PODMAN) run --rm --network=none --security-opt label=disable \
 	  --mount=type=image,src=$(TREE_IMAGE),dest=/chunkah \
-	  -e SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  -e SOURCE_DATE_EPOCH=$$sde \
 	  $(CHUNKAH_IMAGE) build --max-layers 128 --prune /sysroot/ -t $(CHUNKED_IMAGE) \
 	  | $(PODMAN) load
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \

@@ -12,6 +12,12 @@ echo '%_install_langs C.utf8:en:en_US:en_GB' > /etc/rpm/macros.image-language-co
 
 fedver=$(rpm -E %fedora)
 
+# rpm stamps each package's install time into the rpmdb (a 14M layer) and
+# takes SOURCE_DATE_EPOCH when set. The base image's package set's, read
+# before anything is installed: the same base and packages give the same rpmdb.
+SOURCE_DATE_EPOCH=$(/ctx/build/source-date-epoch.sh)
+export SOURCE_DATE_EPOCH
+
 # --- third-party repos -------------------------------------------------------
 dnf -y install \
     "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedver}.noarch.rpm" \

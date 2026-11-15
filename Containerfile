@@ -11,19 +11,19 @@
 #   nvidia-build  builds the NVIDIA open kernel module, unsigned (only compile step)
 #   nvidia-sign   signs its .ko files
 #   rootfs        packages, config overlay, initramfs
-#   signer        base + systemd-ukify (sbsign/ukify), the only signing tools
-#   sdboot-sign   signs rootfs's systemd-boot
-#   tree          rootfs + signed systemd-boot, flat (the last stage here)
+#   normalized    rootfs, directory mtimes pinned
+#   tree          normalized, flat (the last stage here)
 # then, in `make build`:
 #   chunkah       splits tree into up to 128 layers by package (offline, no keys)
-#   Containerfile.seal: composefs digest + signed UKI over the split image,
-#                 final = split layers + /boot/EFI/Linux/<kver>.efi
+#   Containerfile.seal: signs systemd-boot, composefs digest + signed UKI
+#                 over the split image; final = split layers + signed
+#                 systemd-boot + /boot/EFI/Linux/<kver>.efi
 # Layers then only change with their packages, so `bootc upgrade` downloads
 # the changed ones instead of the whole image (bootc has no partial pulls).
 #
 # The db key (build secret sb_key) is mounted ONLY in --network=none steps of
-# stages built from the clean Fedora base: nvidia-sign, sdboot-sign, sealer
-# (Containerfile.seal).
+# stages built from the clean Fedora base: nvidia-sign here, sdboot-sign and
+# sealer in Containerfile.seal.
 # Steps that run third-party code (RPM Fusion, COPR, NVIDIA, k3s, dracut
 # modules of installed packages) never see it, so they can neither send it
 # anywhere nor hide it in the image.
@@ -106,30 +106,19 @@ RUN --network=none \
 RUN rm -rf /run/dnf /run/secrets 2>/dev/null; \
     bootc container lint --fatal-warnings --no-truncate
 
-# ---------------------------------------------------------------------------
-FROM base AS signer
-RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
-    dnf -y --setopt=keepcache=True install systemd-ukify sbsigntools
 
 # ---------------------------------------------------------------------------
-FROM signer AS sdboot-sign
-ARG SB_CERT_SHA256
+# Last step on the tree: same directory mtimes on every build (see script).
+# systemd-boot is signed after chunking (Containerfile.seal): its signature
+# carries a signing time, so the signed binary is new on every build and gets
+# a small layer of its own there, instead of making systemd's layer new.
+FROM rootfs AS normalized
 RUN --network=none \
-    --mount=type=bind,from=rootfs,source=/usr/lib/systemd/boot/efi,target=/in \
-    --mount=type=secret,id=sb_key \
-    --mount=type=secret,id=sb_cert \
-    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
-    mkdir -p /out && \
-    /usr/lib/systemd/systemd-sbsign sign \
-        --private-key /run/secrets/sb_key \
-        --certificate /run/secrets/sb_cert \
-        --output /out/systemd-bootx64.efi.signed \
-        /in/systemd-bootx64.efi && \
-    cp /out/systemd-bootx64.efi.signed /out/systemd-bootx64.efi
+    --mount=type=bind,source=build/normalize-mtimes.sh,target=/ctx/normalize-mtimes.sh \
+    /ctx/normalize-mtimes.sh
 
 # ---------------------------------------------------------------------------
 # The unsealed image as one flat tree. `make build` then splits it into
 # content-based layers (chunkah) and seals that (Containerfile.seal).
 FROM scratch AS tree
-COPY --from=rootfs / /
-COPY --from=sdboot-sign /out/ /usr/lib/systemd/boot/efi/
+COPY --from=normalized / /

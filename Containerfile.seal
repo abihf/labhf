@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Seal the chunked image (second half of `make build`, see Containerfile):
-# compute the composefs digest over exactly the layers that ship, build and
-# sign the UKI, add it as the last layer. The digest must be computed after
+# sign systemd-boot (its own layer), compute the composefs digest over
+# exactly the layers that ship, build and sign the UKI, add it as the last
+# layer. The digest must be computed after
 # chunking: chunkah may change mtimes, and mtimes are part of the composefs
 # metadata.
 ARG FEDORA=45
@@ -14,10 +15,30 @@ FROM ${BASE} AS signer
 RUN --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
     dnf -y --setopt=keepcache=True install systemd-ukify sbsigntools
 
+# systemd-boot from the systemd-boot-unsigned package, signed. Its own layer:
+# the signature carries a signing time, so these bytes are new every build.
+FROM signer AS sdboot-sign
+ARG SB_CERT_SHA256
+RUN --network=none \
+    --mount=type=bind,from=chunked,source=/usr/lib/systemd/boot/efi,target=/in \
+    --mount=type=secret,id=sb_key \
+    --mount=type=secret,id=sb_cert \
+    test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
+    mkdir -p /out && \
+    /usr/lib/systemd/systemd-sbsign sign \
+        --private-key /run/secrets/sb_key \
+        --certificate /run/secrets/sb_cert \
+        --output /out/systemd-bootx64.efi.signed \
+        /in/systemd-bootx64.efi && \
+    cp /out/systemd-bootx64.efi.signed /out/systemd-bootx64.efi
+
+FROM chunked AS signed
+COPY --from=sdboot-sign /out/ /usr/lib/systemd/boot/efi/
+
 FROM signer AS sealer
 ARG SB_CERT_SHA256
 RUN --network=none \
-    --mount=type=bind,from=chunked,target=/target \
+    --mount=type=bind,from=signed,target=/target \
     --mount=type=bind,source=build,target=/ctx/build \
     --mount=type=secret,id=sb_key \
     --mount=type=secret,id=sb_cert \
@@ -25,7 +46,7 @@ RUN --network=none \
     test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
     /ctx/build/seal-uki.sh
 
-FROM chunked
+FROM signed
 COPY --from=sealer /out/boot /boot
 LABEL containers.bootc=1
 LABEL org.opencontainers.image.title="labhf"

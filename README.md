@@ -254,17 +254,41 @@ keys, only the tree mounted), then computes the composefs digest and signs
 the UKI over exactly those layers (`Containerfile.seal`; `/boot` is the last,
 small layer). A package update then only changes its layers. The base image's
 unused ostree repo in `/sysroot/` (2G) is dropped in the same step, and images
-are pushed with zstd. Chunking must happen before sealing: chunkah clamps
-mtimes to `SOURCE_DATE_EPOCH` (the commit time), and mtimes are part of the
-composefs metadata. Files the build installs itself (k3s, the signed NVIDIA
-modules) get a fixed mtime so the clamp doesn't move them to a new layer on
-every commit.
+are pushed with zstd. Chunking must happen before sealing: chunkah changes
+mtimes, and mtimes are part of the composefs metadata.
+
+A layer is only reused if its bytes are identical, mtimes included, so
+nothing in it may depend on the commit or the clock:
+- chunkah clamps a packaged file's mtime to its package's build time, and
+  every other file's to `SOURCE_DATE_EPOCH`. That is the newest package
+  build time in the tree (`build/source-date-epoch.sh`), not the commit time:
+  it moves with the package set only.
+- Directories all get mtime 0 (`build/normalize-mtimes.sh`, as ostree does).
+  Many are shared (`/usr/lib/.build-id`, icon theme dirs) and each layer
+  carries its parent directories, so one added package used to change the
+  mtime of `/usr/lib/.build-id` in ~100 layers.
+- The initramfs is built with `SOURCE_DATE_EPOCH` set (dracut's
+  `reproducible=yes`), and the NVIDIA kmod RPM, rebuilt on every CI run, takes
+  its build time from its changelog and a fixed build host.
+- rpm stamps install times from `SOURCE_DATE_EPOCH` (the base image's
+  package set's, `packages.sh`), so the rpmdb only changes with packages.
+- The kmod RPM is built with `rpmbuild` in a fixed directory, not by
+  akmods in a random one: that path ended up in each module's build-id.
+- systemd-boot is signed in `Containerfile.seal`, as a layer of its own: the
+  signature carries a signing time, and in the tree it made systemd's 15M
+  layer new on every build.
+- dnf's transaction history (build timestamps) is not shipped; font caches
+  are rebuilt over the pinned directory mtimes.
+- Files the build installs itself (k3s, the signed NVIDIA modules) get a
+  fixed mtime.
 
 Measured in QEMU: the image is 129 layers, 1.33 GiB with zstd (was one 4G
-layer; 1.75 GiB before stripping, below). An update after a full rebuild of a new commit (`make build
-TREE_BUILD_FLAGS=--no-cache`) downloaded 222 MiB: the UKI
-(~92M, new digest every build), the initramfs (~74M, dracut is not
-reproducible), rpmdb, hwdb, SELinux policy store and the rebuilt nvidia.ko.
+layer; 1.75 GiB before stripping, below). Two full rebuilds of the tree
+(`make build TREE_BUILD_FLAGS=--no-cache`) now give identical
+chunked layers; only the signed systemd-boot (0.2M) and the UKI (~81M) are
+new on every CI build, since a fresh runner signs them again. Before, the
+same rebuild changed 16 layers (~215M: initramfs, rpmdb, kmod, every layer
+holding a directory the build touched), and adding one package ~110 (~640M).
 Package updates add the layers of the packages that changed.
 
 ### What the image leaves out
@@ -352,7 +376,7 @@ plain Fedora base, which run Fedora's tools and our scripts only:
 | `sdboot-sign` | systemd-boot | `systemd-sbsign` |
 | `sealer` | the UKI | `bootc container ukify` (the sealer's own bootc, byte-identical to the target's) |
 
-RPM Fusion's akmods build, the RPM Fusion / COPR / NVIDIA / k3s installs and
+RPM Fusion's kmod build (its akmod SRPM), the RPM Fusion / COPR / NVIDIA / k3s installs and
 dracut (with installed packages' modules) run without the key, so their code
 can neither send it out nor hide it in the image. The kmod RPM is built
 unsigned; `packages.sh` lays the signed modules over its files and fails on any

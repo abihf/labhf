@@ -77,8 +77,8 @@ jobs:
           fi
           echo "IMAGE_REPO=$repo" >> "$GITHUB_ENV"
           echo "TAGS=$tags" >> "$GITHUB_ENV"
-          # chunkah clamps newer mtimes to this: same commit -> same layers
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          # no SOURCE_DATE_EPOCH: make build takes the packages' (layers then
+          # change with packages, not with every commit)
           echo "Pushing $repo: $tags"
 
       - name: Build and push
@@ -95,7 +95,7 @@ jobs:
           docker run --rm --privileged \
             -v "$PWD:/src" -w /src \
             -v /mnt/containers:/var/lib/containers \
-            -e IMAGE_REPO -e TAGS -e REGISTRY_USER -e REGISTRY_TOKEN -e BUILD_LABELS -e SOURCE_DATE_EPOCH \
+            -e IMAGE_REPO -e TAGS -e REGISTRY_USER -e REGISTRY_TOKEN -e BUILD_LABELS \
             quay.io/podman/stable:v5.8.9@sha256:f7a17ef911a2b9b866ada8a9426a07e29a6e4f8109ef8c0e0b7010c2541b4e49 \
             bash scripts/ci-build.sh
 
