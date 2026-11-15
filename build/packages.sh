@@ -135,8 +135,10 @@ rpm -q "${keep[@]}"
 # and what requires it (by any of its provides, e.g. mesa-dri-drivers(x86-64))
 for p in mesa-dri-drivers llvm-libs gtk3 gstreamer1 pipewire-libs; do
     rpm -q "$p" >/dev/null || continue
+    # rpm -q exits 1 for a provide nothing requires
     by=$(rpm -q --provides "$p" | awk '{print $1}' | sort -u |
-         xargs -r -d '\n' rpm -q --whatrequires --qf '%{NAME}\n' 2>/dev/null | grep -v '^no package' | sort -u | tr '\n' ' ')
+         while read -r c; do rpm -q --whatrequires --qf '%{NAME}\n' "$c" 2>/dev/null || true; done |
+         { grep -v -e '^no package' -e "^$p\$" || true; } | sort -u | tr '\n' ' ')
     echo "still installed: $p, required by: ${by:-nothing}"
 done
 
