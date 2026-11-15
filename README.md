@@ -247,7 +247,9 @@ without `%doc`, and only English translations are kept; the base image's docs,
 man pages and other translations are deleted. Licenses stay (the image is
 redistributed). The build fails if a removal ever takes a package that matters
 (kernel, bootc, skopeo, NVIDIA, AMD/Realtek firmware, k3s SELinux). The
-machine is headless: no compositor, browser, Mesa GL or fonts. The rpmdb stays:
+machine is headless: no compositor, browser, Mesa GL or fonts, and no
+`nvidia-settings` (a GTK3 GUI `xorg-x11-drv-nvidia` requires; removed with
+`rpm -e --nodeps` after the last dnf step, with the packages only it needed). The rpmdb stays:
 chunkah needs it for the layers, and scanners and `rpm -qf` need it.
 Uncompressed tree: 3.9G → 2.9G. Different hardware (Wi-Fi, Intel) may need
 some of these back.

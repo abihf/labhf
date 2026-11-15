@@ -97,10 +97,6 @@ keep=(kernel-core bootc skopeo podman
       xorg-x11-drv-nvidia xorg-x11-drv-nvidia-cuda-libs nvidia-container-toolkit
       container-selinux k3s-selinux systemd-networkd)
 rpm -q "${keep[@]}"
-# Headless now (no kiosk): log any GL/media stack something still pulls in
-for p in mesa-dri-drivers llvm-libs gtk3 gstreamer1 pipewire-libs; do
-    rpm -q "$p" >/dev/null && echo "still installed: $p, needed by: $(rpm -q --whatrequires "$p" --qf '%{NAME} ' 2>/dev/null)"
-done
 if rpm -qa 'qemu-user-static*' python3-botocore nvidia-gpu-firmware | grep .; then
     echo "strip list not removed" >&2; exit 1
 fi
@@ -116,6 +112,21 @@ rpm -q akmod-nvidia && dnf -y remove akmod-nvidia akmods || true
 # xorg-x11-drv-nvidia Requires grubby -> grub2-tools; we boot systemd-boot only
 rpm -qa 'grub2-*' grubby | xargs -r rpm -e --nodeps
 rm -rf /boot/grub2 /etc/grub.d /etc/default/grub /etc/systemd/user/timers.target.wants/grub-boot-success.timer
+
+# xorg-x11-drv-nvidia Requires nvidia-settings, a GTK3 GUI this headless box
+# never runs; it alone keeps GTK3 and its libraries (~110M). Remove it, then
+# what became unneeded with it (only that: compared before and after).
+unneeded() { dnf -q repoquery --installed --unneeded --qf '%{name}\n' | sort -u; }
+before=$(unneeded)
+rpm -e --nodeps nvidia-settings
+mapfile -t orphans < <(comm -13 <(echo "$before") <(unneeded))
+echo "removed with nvidia-settings: ${orphans[*]:-none}"
+(( ${#orphans[@]} )) && rpm -e "${orphans[@]}"
+rpm -q "${keep[@]}"
+# Headless now (no kiosk): log any GL/media stack something still pulls in
+for p in mesa-dri-drivers llvm-libs gtk3 gstreamer1 pipewire-libs; do
+    rpm -q "$p" >/dev/null && echo "still installed: $p, needed by: $(rpm -q --whatrequires "$p" --qf '%{NAME} ' 2>/dev/null)"
+done
 
 # akmods/kmods leave units around that try to build at boot
 systemctl disable akmods.service 2>/dev/null || true
