@@ -1,22 +1,16 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Install the upstream k3s static binary (pinned + checksummed).
+# Install the upstream k3s static binary into /out (copied into rootfs).
+# Downloaded and checksummed by the k3s-src stage (ADD --checksum): /in/k3s.
 set -euxo pipefail
 
-: "${K3S_VERSION:?}" "${K3S_SHA256:?}"
-
-url="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION//+/%2B}/k3s"
-curl -fsSL -o /tmp/k3s "$url"
-echo "${K3S_SHA256}  /tmp/k3s" | sha256sum -c -
-install -m 0755 /tmp/k3s /usr/bin/k3s
-# fixed mtime: chunkah clamps newer mtimes to the commit time, which would put
-# the same 80M binary in a new layer on every commit (pinned by sha256 anyway)
-touch -d @0 /usr/bin/k3s
-
+install -D -m 0755 /in/k3s /out/usr/bin/k3s
 for l in kubectl crictl ctr; do
-    ln -sf k3s "/usr/bin/$l"
+    ln -sf k3s "/out/usr/bin/$l"
 done
+# fixed mtime: chunkah clamps newer mtimes to SOURCE_DATE_EPOCH, which would
+# put the same 80M binary in a new layer on every package change (pinned by
+# sha256 anyway)
+touch -h -d @0 /out/usr/bin/{k3s,kubectl,crictl,ctr}
 
-/usr/bin/k3s --version
-# Show which SELinux type the policy assigns (should be k3s_exec_t or similar)
-matchpathcon /usr/bin/k3s || true
+/out/usr/bin/k3s --version

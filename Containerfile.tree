@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The unsealed image as one flat tree (between Containerfile and chunkah, see
+# its header). Built without the CI layer cache: both steps give new layers
+# on every rootfs change, and the flat one is the whole image.
+ARG ROOTFS=localhost/labhf-rootfs:build
+
+# Last step on the tree: same directory mtimes on every build (see script).
+# systemd-boot is signed after chunking (Containerfile.seal): its signature
+# carries a signing time, so the signed binary is new on every build and gets
+# a small layer of its own there, instead of making systemd's layer new.
+FROM ${ROOTFS} AS normalized
+RUN --network=none \
+    --mount=type=bind,source=build/normalize-mtimes.sh,target=/ctx/normalize-mtimes.sh \
+    /ctx/normalize-mtimes.sh
+
+# `make build` then splits it into content-based layers (chunkah) and seals
+# that (Containerfile.seal).
+FROM scratch AS tree
+COPY --from=normalized / /

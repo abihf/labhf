@@ -23,7 +23,8 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 ## Layout
 
 ```
-Containerfile          image build up to the flat tree (multi-stage, see header)
+Containerfile          image build up to rootfs (multi-stage, see header)
+Containerfile.tree     rootfs with directory mtimes pinned, as one flat tree
 Containerfile.seal     composefs digest + signed UKI over the chunked layers
 Containerfile.tools    host helper container: openssl, sbsigntools, virt-fw-vars
 build/                 scripts run inside build stages
@@ -341,11 +342,17 @@ and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
 builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
 and fails if the db key turns up anywhere in the image.
 
-The `tree` stage's layer cache is kept in `ghcr.io/<owner>/labhf-cache`
-(`--cache-from`/`--cache-to`, one tag per build step), so a run only rebuilds
-the steps whose inputs changed; chunkah and the seal run every time. A new
+The layer cache of the `Containerfile` build (up to `rootfs`) is kept in
+`ghcr.io/<owner>/labhf-cache` (`--cache-from`/`--cache-to`, one tag per build
+step), so a run only rebuilds the steps whose inputs changed. Each app is its
+own stage, and each step mounts only the scripts it runs: editing
+`finalize.sh` keeps the dnf, NVIDIA, k3s and dashboard layers. Downloads are
+`ADD --checksum` in `FROM scratch` stages, so they survive a new base image.
+Pinning directory mtimes and flattening (`Containerfile.tree`), chunkah and
+the seal run every time and are not cached: their layers change whenever
+`rootfs` does, and the flat one is the whole image. A new
 digest of `quay.io/fedora/fedora-bootc` (frequent) invalidates every step after
-`FROM`. Package updates that land without a new base image wait for the next
+`FROM base`. Package updates that land without a new base image wait for the next
 one. Keep the `labhf-cache`
 package private, and prune old tags now and then; the dnf download cache
 (`--mount=type=cache`) is not part of it.

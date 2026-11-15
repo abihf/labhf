@@ -7,13 +7,14 @@
 # by fs-verity at runtime.
 #
 # Stages:
-#   base          upstream Fedora bootc image
-#   nvidia-build  builds the NVIDIA open kernel module, unsigned (only compile step)
-#   nvidia-sign   signs its .ko files
-#   rootfs        packages, config overlay, initramfs
-#   normalized    rootfs, directory mtimes pinned
-#   tree          normalized, flat (the last stage here)
-# then, in `make build`:
+#   base            upstream Fedora bootc image
+#   nvidia-build    builds the NVIDIA open kernel module, unsigned (only compile step)
+#   nvidia-sign     signs its .ko files
+#   k3s, home-dashboard   one per downloaded app (ADD --checksum), files in /out
+#   packages        all dnf work
+#   rootfs          packages + apps, config overlay, initramfs (the last stage here)
+# then, in `make build` (none of it in the CI layer cache):
+#   Containerfile.tree: rootfs, directory mtimes pinned, flat
 #   chunkah       splits tree into up to 128 layers by package (offline, no keys)
 #   Containerfile.seal: signs systemd-boot, composefs digest + signed UKI
 #                 over the split image; final = split layers + signed
@@ -67,27 +68,67 @@ RUN --network=none \
     bash /ctx/nvidia-kmod.sh sign
 
 # ---------------------------------------------------------------------------
-FROM base AS rootfs
+# One stage per downloaded app: built independently of the packages, and the
+# download itself (FROM scratch, checksummed by ADD) survives a new base image.
+# The install steps pin the mtime: chunkah clamps newer mtimes to
+# SOURCE_DATE_EPOCH (the newest package build time), which would put the same
+# binary in a new layer whenever any package changes.
+
+# k3s: upstream static binary
+FROM scratch AS k3s-src
 ARG K3S_VERSION=v1.37.2+k3s1
 ARG K3S_SHA256=265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+ADD --link --checksum=sha256:${K3S_SHA256} \
+    https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}/k3s /k3s
 
-RUN --mount=type=bind,source=build,target=/ctx/build \
+FROM base AS k3s
+RUN --network=none \
+    --mount=type=bind,source=build/k3s.sh,target=/ctx/k3s.sh \
+    --mount=type=bind,from=k3s-src,target=/in \
+    bash /ctx/k3s.sh
+
+# the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
+FROM scratch AS home-dashboard-src
+ARG HOME_DASHBOARD_VERSION=v0.0.2
+ARG HOME_DASHBOARD_SHA256=66e8ce33a8602b3fe8a72b98e112a85a67b886bb348932a7b75b6a7158671003
+ADD --link --checksum=sha256:${HOME_DASHBOARD_SHA256} \
+    https://github.com/abihf/home-dashboard/releases/download/${HOME_DASHBOARD_VERSION}/home-dashboard-${HOME_DASHBOARD_VERSION}-linux-x64.tar.gz \
+    /home-dashboard.tar.gz
+
+FROM base AS home-dashboard
+RUN --network=none \
+    --mount=type=bind,source=build/home-dashboard.sh,target=/ctx/home-dashboard.sh \
+    --mount=type=bind,from=home-dashboard-src,target=/in \
+    --mount=type=tmpfs,target=/tmp \
+    bash /ctx/home-dashboard.sh
+
+# ---------------------------------------------------------------------------
+# All dnf work in one stage. Only the scripts it runs are mounted, so editing
+# other build scripts keeps this (slowest) layer.
+FROM base AS packages
+ARG FEDORA
+# third-party repo files (not pinned: a changed file re-runs the dnf step)
+# WPE WebKit was retired from Fedora; unofficial COPR by an Igalia dev.
+# Provides /usr/libexec/wpe-webkit-2.0/MiniBrowser.
+ADD --link --chmod=0644 \
+    https://copr.fedorainfracloud.org/coprs/philn/wpewebkit/repo/fedora-${FEDORA}/philn-wpewebkit-fedora-${FEDORA}.repo \
+    /etc/yum.repos.d/philn-wpewebkit.repo
+ADD --link --chmod=0644 \
+    https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
+    /etc/yum.repos.d/nvidia-container-toolkit.repo
+RUN --mount=type=bind,source=build/packages.sh,target=/ctx/build/packages.sh \
+    --mount=type=bind,source=build/source-date-epoch.sh,target=/ctx/build/source-date-epoch.sh \
     --mount=type=bind,from=nvidia-sign,source=/out,target=/ctx/nvidia \
     --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
     /ctx/build/packages.sh
 
-RUN --mount=type=bind,source=build,target=/ctx/build \
-    --mount=type=tmpfs,target=/tmp \
-    K3S_VERSION="${K3S_VERSION}" K3S_SHA256="${K3S_SHA256}" /ctx/build/k3s.sh
-
-# the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
-ARG HOME_DASHBOARD_VERSION=v0.0.2
-ARG HOME_DASHBOARD_SHA256=66e8ce33a8602b3fe8a72b98e112a85a67b886bb348932a7b75b6a7158671003
-RUN --mount=type=bind,source=build,target=/ctx/build \
-    --mount=type=tmpfs,target=/tmp \
-    HOME_DASHBOARD_VERSION="${HOME_DASHBOARD_VERSION}" HOME_DASHBOARD_SHA256="${HOME_DASHBOARD_SHA256}" \
-    /ctx/build/home-dashboard.sh
+# ---------------------------------------------------------------------------
+# The last stage here, and the last one CI caches. Containerfile.tree then
+# pins directory mtimes and flattens it, uncached (new on every build).
+FROM packages AS rootfs
+COPY --link --from=k3s /out/ /
+COPY --link --from=home-dashboard /out/ /
 
 # Config overlay (systemd units, kargs, dracut, repart, scripts, ...)
 COPY rootfs/ /
@@ -98,27 +139,11 @@ COPY --from=keys auth/ /usr/lib/bootc/install/secureboot-keys/labhf/
 
 ARG SERIAL_CONSOLE=0
 RUN --network=none \
-    --mount=type=bind,source=build,target=/ctx/build \
+    --mount=type=bind,source=build/finalize.sh,target=/ctx/build/finalize.sh \
+    --mount=type=bind,source=build/source-date-epoch.sh,target=/ctx/build/source-date-epoch.sh \
     --mount=type=tmpfs,target=/tmp \
     SERIAL_CONSOLE="${SERIAL_CONSOLE}" /ctx/build/finalize.sh
 
 # Separate step so no build-secret mount exists under /run
 RUN rm -rf /run/dnf /run/secrets 2>/dev/null; \
     bootc container lint --fatal-warnings --no-truncate
-
-
-# ---------------------------------------------------------------------------
-# Last step on the tree: same directory mtimes on every build (see script).
-# systemd-boot is signed after chunking (Containerfile.seal): its signature
-# carries a signing time, so the signed binary is new on every build and gets
-# a small layer of its own there, instead of making systemd's layer new.
-FROM rootfs AS normalized
-RUN --network=none \
-    --mount=type=bind,source=build/normalize-mtimes.sh,target=/ctx/normalize-mtimes.sh \
-    /ctx/normalize-mtimes.sh
-
-# ---------------------------------------------------------------------------
-# The unsealed image as one flat tree. `make build` then splits it into
-# content-based layers (chunkah) and seals that (Containerfile.seal).
-FROM scratch AS tree
-COPY --from=normalized / /

@@ -14,6 +14,7 @@ FEDORA      ?= 45
 BUILD_ARGS  ?=
 # chunkah splits the flat tree into content-based layers (pinned by digest)
 CHUNKAH_IMAGE ?= quay.io/coreos/chunkah:v0.7.1@sha256:71e593421c5de7dcc7c8c5c50e98d3bac572055a76f399f61a491d123c20a523
+ROOTFS_IMAGE  ?= localhost/labhf-rootfs:build
 TREE_IMAGE    ?= localhost/labhf-tree:build
 CHUNKED_IMAGE ?= localhost/labhf-chunked:build
 # chunkah clamps files without a package build time to SOURCE_DATE_EPOCH.
@@ -24,7 +25,8 @@ PUSH_ARGS   ?= --compression-format zstd
 # 1: add console=ttyS0 (boot log + passphrase prompt on the serial console),
 # for debugging in QEMU. Off in the image that ships.
 SERIAL_CONSOLE ?= 0
-# e.g. --no-cache: rebuild everything, as CI does on a fresh runner
+# flags for the Containerfile build (up to rootfs), e.g. --no-cache: rebuild
+# everything, as on a fresh runner; CI: its registry layer cache
 TREE_BUILD_FLAGS ?=
 
 # network installer UKI (make installer). Defaults: the QEMU VM.
@@ -92,7 +94,8 @@ import-sbctl:
 SIGN_ARGS = --secret id=sb_key,src=keys/db.key --secret id=sb_cert,src=keys/db.crt \
             --build-arg SB_CERT_SHA256=$$(sha256sum < keys/db.crt | cut -c1-64)
 
-# 1. flat tree (packages, signed modules + systemd-boot)
+# 1. rootfs (packages, signed modules, apps, config), then the flat tree
+#    (directory mtimes pinned; never in the CI layer cache: Containerfile.tree)
 # 2. chunkah: content-based layers; no network, no keys, only the tree mounted.
 #    /sysroot/ is emptied: the base image's ostree repo (2G) is unused with composefs
 # 3. seal: composefs digest + signed UKI over the chunked layers
@@ -101,7 +104,10 @@ build: keys/db.key
 	  --build-arg SERIAL_CONSOLE=$(SERIAL_CONSOLE) \
 	  --security-opt label=disable \
 	  --build-context keys=$(KEYS_DIR) \
-	  $(TREE_BUILD_FLAGS) --target tree -t $(TREE_IMAGE) -f Containerfile .
+	  $(TREE_BUILD_FLAGS) --target rootfs -t $(ROOTFS_IMAGE) -f Containerfile .
+	$(PODMAN) build --network=none --build-arg ROOTFS=$(ROOTFS_IMAGE) \
+	  --security-opt label=disable \
+	  -t $(TREE_IMAGE) -f Containerfile.tree .
 	sde=$(or $(SOURCE_DATE_EPOCH),$$($(PODMAN) run --rm --network=none --security-opt label=disable \
 	  -v $(CURDIR)/build/source-date-epoch.sh:/source-date-epoch.sh:ro \
 	  $(TREE_IMAGE) /source-date-epoch.sh)); \

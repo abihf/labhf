@@ -1,18 +1,14 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Install the home-dashboard server (the page the kiosk shows): a single
-# executable from https://github.com/abihf/home-dashboard/releases, pinned and
-# checksummed. Served by home-dashboard.service on 127.0.0.1:3000.
+# Install the home-dashboard server (the page the kiosk shows) into /out
+# (copied into rootfs): a single executable from
+# https://github.com/abihf/home-dashboard/releases, downloaded and checksummed
+# by the home-dashboard-src stage (ADD --checksum): /in/home-dashboard.tar.gz.
+# Served by home-dashboard.service on 127.0.0.1:3000.
 set -euxo pipefail
 
-: "${HOME_DASHBOARD_VERSION:?}" "${HOME_DASHBOARD_SHA256:?}"
-
-name="home-dashboard-${HOME_DASHBOARD_VERSION}-linux-x64"
-url="https://github.com/abihf/home-dashboard/releases/download/${HOME_DASHBOARD_VERSION}/${name}.tar.gz"
-curl -fsSL -o /tmp/hd.tar.gz "$url"
-echo "${HOME_DASHBOARD_SHA256}  /tmp/hd.tar.gz" | sha256sum -c -
-tar -xzf /tmp/hd.tar.gz -C /tmp "${name}/home-dashboard"
-install -D -m 0755 "/tmp/${name}/home-dashboard" /usr/libexec/home-dashboard/home-dashboard
+tar -xzf /in/home-dashboard.tar.gz -C /tmp --wildcards '*/home-dashboard'
+bin=$(echo /tmp/home-dashboard-*/home-dashboard)
+install -D -m 0755 "$bin" /out/usr/libexec/home-dashboard/home-dashboard
 # fixed mtime, so an unchanged binary keeps its layer (see k3s.sh)
-touch -d @0 /usr/libexec/home-dashboard/home-dashboard
-rm -rf /tmp/hd.tar.gz "/tmp/${name}"
+touch -d @0 /out/usr/libexec/home-dashboard/home-dashboard

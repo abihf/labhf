@@ -23,13 +23,9 @@ dnf -y install \
     "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedver}.noarch.rpm" \
     "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${fedver}.noarch.rpm"
 
-# WPE WebKit was retired from Fedora; unofficial COPR by an Igalia dev.
-# Provides /usr/libexec/wpe-webkit-2.0/MiniBrowser.
-curl -fsSL -o /etc/yum.repos.d/philn-wpewebkit.repo \
-    "https://copr.fedorainfracloud.org/coprs/philn/wpewebkit/repo/fedora-${fedver}/philn-wpewebkit-fedora-${fedver}.repo"
-
-curl -fsSL -o /etc/yum.repos.d/nvidia-container-toolkit.repo \
-    https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo
+# COPR wpewebkit and nvidia-container-toolkit .repo files: ADDed by the
+# Containerfile (packages stage)
+ls /etc/yum.repos.d/philn-wpewebkit.repo /etc/yum.repos.d/nvidia-container-toolkit.repo
 
 cat > /etc/yum.repos.d/rancher-k3s-common.repo <<'EOF'
 [rancher-k3s-common-stable]

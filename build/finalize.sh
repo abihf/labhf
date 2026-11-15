@@ -5,6 +5,10 @@ set -euxo pipefail
 
 kver=$(ls /usr/lib/modules)
 
+# k3s (k3s stage): the SELinux type the policy assigns (should be k3s_exec_t or similar)
+/usr/bin/k3s --version
+matchpathcon /usr/bin/k3s || true
+
 # --- units -------------------------------------------------------------------
 systemctl enable \
     sshd.service \

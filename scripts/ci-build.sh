@@ -5,7 +5,7 @@
 #
 # Env: IMAGE_REPO (ghcr.io/<owner>/labhf), TAGS (space separated),
 #      REGISTRY_USER, REGISTRY_TOKEN, BUILD_LABELS (extra --label flags).
-# Layer cache of the tree stage: ${IMAGE_REPO}-cache (one tag per step).
+# Layer cache of the Containerfile stages: ${IMAGE_REPO}-cache (one tag per step).
 # Expects keys/db.key, keys/db.crt and keys/auth/*.auth in the checkout.
 set -euo pipefail
 
@@ -15,8 +15,10 @@ dnf -y -q install make >/dev/null
 podman login ghcr.io -u "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_TOKEN"
 trap 'podman logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
-# Only the tree stage is cached (nvidia kmod build, dnf installs); chunkah and
-# the seal depend on it. Secrets are not in the cache key: SB_CERT_SHA256 is,
+# Only the Containerfile build (up to rootfs) is cached: nvidia kmod, apps,
+# dnf installs, finalize. The normalize + flatten (Containerfile.tree), chunkah
+# and the seal run every time: their layers are new whenever rootfs is, and
+# the flat one is the whole image. Secrets are not in the cache key: SB_CERT_SHA256 is,
 # so a new db key re-runs the signing steps. Cached layers hold signed files,
 # never the key. A new base image digest invalidates everything after FROM.
 cache="${IMAGE_REPO}-cache"
