@@ -24,8 +24,12 @@ PUSH_ARGS   ?= --compression-format zstd
 # 1: add console=ttyS0 (boot log + passphrase prompt on the serial console),
 # for debugging in QEMU. Off in the image that ships.
 SERIAL_CONSOLE ?= 0
-# e.g. --no-cache: rebuild everything, as CI does on a fresh runner
+# e.g. --no-cache: rebuild everything
 TREE_BUILD_FLAGS ?=
+# set: build the NVIDIA stages alone first with these flags, e.g. a registry
+# layer cache (CI: --cache-from/--cache-to). The tree build then finds them
+# in local storage, and pushes nothing.
+NVIDIA_BUILD_FLAGS ?=
 
 # network installer UKI (make installer). Defaults: the QEMU VM.
 #   real PC: INSTALLER_REGISTRY=<this PC>:5000 INSTALLER_NET=static:ADDR/24,GW[,DNS]
@@ -97,6 +101,11 @@ SIGN_ARGS = --secret id=sb_key,src=keys/db.key --secret id=sb_cert,src=keys/db.c
 #    /sysroot/ is emptied: the base image's ostree repo (2G) is unused with composefs
 # 3. seal: composefs digest + signed UKI over the chunked layers
 build: keys/db.key
+ifneq ($(strip $(NVIDIA_BUILD_FLAGS)),)
+	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --security-opt label=disable \
+	  $(NVIDIA_BUILD_FLAGS) --target nvidia-sign -f Containerfile .
+endif
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
 	  --build-arg SERIAL_CONSOLE=$(SERIAL_CONSOLE) \
 	  --security-opt label=disable \

@@ -340,14 +340,15 @@ and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
 builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
 and fails if the db key turns up anywhere in the image.
 
-The `tree` stage's layer cache is kept in `ghcr.io/<owner>/labhf-cache`
-(`--cache-from`/`--cache-to`, one tag per build step), so a run only rebuilds
-the steps whose inputs changed; chunkah and the seal run every time. A new
-digest of `quay.io/fedora/fedora-bootc` (frequent) invalidates every step after
-`FROM`. Package updates that land without a new base image wait for the next
-one. Keep the `labhf-cache`
-package private, and prune old tags now and then; the dnf download cache
-(`--mount=type=cache`) is not part of it.
+The NVIDIA stages (`nvidia-build`, `nvidia-sign`: ~9 of the build's minutes)
+are built first with a layer cache in `ghcr.io/<owner>/labhf-cache`
+(`--cache-from`/`--cache-to`, one tag per step, `NVIDIA_BUILD_FLAGS`); the
+tree build then reuses them from local storage. They rebuild only when
+`build/nvidia-kmod.sh`, the db certificate or the `fedora-bootc` base image
+(new digest, frequent) changes. The rest is not cached in the registry: its
+steps mount all of `build/`, so most commits miss there, and uploading those
+multi-GB layers made runs slower than building them. Keep the `labhf-cache`
+package private, and prune old tags now and then.
 
 Signing needs three repository secrets. Only the **db** key goes to GitHub;
 `PK.key`/`KEK.key` stay offline:

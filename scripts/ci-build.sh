@@ -5,7 +5,7 @@
 #
 # Env: IMAGE_REPO (ghcr.io/<owner>/labhf), TAGS (space separated),
 #      REGISTRY_USER, REGISTRY_TOKEN, BUILD_LABELS (extra --label flags).
-# Layer cache of the tree stage: ${IMAGE_REPO}-cache (one tag per step).
+# Layer cache of the NVIDIA stages: ${IMAGE_REPO}-cache (one tag per step).
 # Expects keys/db.key, keys/db.crt and keys/auth/*.auth in the checkout.
 set -euo pipefail
 
@@ -15,13 +15,15 @@ dnf -y -q install make >/dev/null
 podman login ghcr.io -u "$REGISTRY_USER" --password-stdin <<<"$REGISTRY_TOKEN"
 trap 'podman logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
-# Only the tree stage is cached (nvidia kmod build, dnf installs); chunkah and
-# the seal depend on it. Secrets are not in the cache key: SB_CERT_SHA256 is,
-# so a new db key re-runs the signing steps. Cached layers hold signed files,
-# never the key. A new base image digest invalidates everything after FROM.
+# Only the NVIDIA stages use the registry cache: they are the slow part
+# (~9 min) and change only with nvidia-kmod.sh or the base image. The rest of
+# the tree mounts all of build/, so most commits miss there anyway, and
+# pushing its multi-GB layers cost more than it saved.
+# Secrets are not in the cache key: SB_CERT_SHA256 is, so a new db key
+# re-runs the signing step. Cached layers hold signed modules, never the key.
 cache="${IMAGE_REPO}-cache"
 make build PODMAN=podman IMAGE=localhost/labhf:ci BUILD_ARGS="$BUILD_LABELS" \
-    TREE_BUILD_FLAGS="--layers --cache-from $cache --cache-to $cache"
+    NVIDIA_BUILD_FLAGS="--layers --cache-from $cache --cache-to $cache"
 
 # the db key is a build secret only: make sure no copy of it is in the image
 needle=$(sed -n 2p keys/db.key)
