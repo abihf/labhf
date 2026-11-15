@@ -96,6 +96,7 @@ strip_pkgs=(
     microcode_ctl                              # Intel CPU microcode (AMD here)
     intel-mediasdk                             # Intel video (libvpl weak dep)
     mesa-vulkan-drivers                        # weak dep; cage/WPE render with GL (174M)
+    kexec-tools makedumpfile                   # no kdump: kexec_load_disabled=1
     # not flite (WebKit's speech synthesis) or x265-libs (libheif-freeworld):
     # removing either takes wpewebkit with it
 )

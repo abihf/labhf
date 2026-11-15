@@ -21,8 +21,13 @@ lsblk -o NAME,SIZE,PARTLABEL,MOUNTPOINTS "/dev/$(lsblk -dno PKNAME /dev/disk/by-
 sec "kernel"
 tr ' ' '\n' < /proc/cmdline | grep -vE '^composefs' | tr '\n' ' '; echo
 sysctl -n kernel.kptr_restrict kernel.dmesg_restrict kernel.unprivileged_bpf_disabled \
-    kernel.yama.ptrace_scope fs.suid_dumpable net.ipv4.conf.all.accept_redirects | tr '\n' ' '; echo
-for m in firewire-core thunderbolt bluetooth sctp udf; do
+    kernel.yama.ptrace_scope fs.suid_dumpable net.ipv4.conf.all.accept_redirects \
+    kernel.io_uring_disabled kernel.kexec_load_disabled kernel.sysrq vm.mmap_rnd_bits \
+    kernel.ftrace_enabled kernel.perf_event_max_sample_rate | tr '\n' ' '; echo
+echo "debug mounts: $(findmnt -rno FSTYPE -t debugfs,tracefs | tr '\n' ' ')(none expected)"
+head -c1 /proc/kcore >/dev/null 2>&1 && echo "kcore READABLE" || echo "kcore blocked"
+systemctl --failed --no-legend --plain | grep -q systemd-sysctl && echo "systemd-sysctl FAILED"
+for m in firewire-core thunderbolt bluetooth sctp udf esp4 l2tp_core nfs sunrpc; do
     modprobe -n -v "$m" 2>&1 | grep -q 'install /bin/false' && printf '%s:blocked ' "$m" || printf '%s:LOADABLE ' "$m"
 done; echo
 echo "nvidia signer: $(modinfo -F signer nvidia)"

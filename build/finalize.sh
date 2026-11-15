@@ -35,6 +35,11 @@ systemctl mask systemd-growfs-root.service
 # no reboot from the keyboard, no root shell on tty9
 # (the base image already has ctrl-alt-del.target in /etc, so mask --force)
 systemctl mask --force ctrl-alt-del.target debug-shell.service
+# sunrpc can't load (modprobe.d/61-labhf-secureblue.conf); nfs-utils comes with
+# the base image and its rpc_pipefs mount would fail every boot
+systemctl mask var-lib-nfs-rpc_pipefs.mount rpc_pipefs.target
+# no debugfs (debugfs=off) or tracefs mounts
+systemctl mask sys-kernel-debug.mount sys-kernel-tracing.mount
 
 # debugging in QEMU only (make build SERIAL_CONSOLE=1)
 if [[ ${SERIAL_CONSOLE:-0} == 1 ]]; then

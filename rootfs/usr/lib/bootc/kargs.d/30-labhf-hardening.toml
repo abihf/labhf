@@ -2,15 +2,40 @@
 # DMA: strict IOTLB, no identity mapping, block PCI bus mastering before the
 # kernel's IOMMU setup.
 # Initrd: never a shell, even after `state` is unlocked.
+# Partly from secureblue's kargs.d/10-secureblue.toml; left out of it: forced
+# CPU mitigations and nosmt (performance), slab_debug, loglevel=0.
 kargs = [
   "init_on_alloc=1",
+  "init_on_free=1",
   "slab_nomerge",
   "page_alloc.shuffle=1",
   "randomize_kstack_offset=on",
+  "hash_pointers=always",
+  # No kernel debugging or profiling, even as root: confidentiality also
+  # blocks kprobes, tracefs, perf on the kernel, BPF reads of kernel memory,
+  # /proc/kcore and /dev/mem (integrity only stops changing the running kernel)
+  "lockdown=confidentiality",
+  "module.sig_enforce=1",
+  "oops=panic",
+  "debugfs=off",
+  "proc_mem.force_override=ptrace",
+  # no 32-bit userspace on this machine
   "vsyscall=none",
+  "vdso32=0",
+  "ia32_emulation=0",
+  # don't credit RDRAND or the boot loader's seed as entropy
+  "random.trust_cpu=off",
+  "random.trust_bootloader=off",
+  "kvm-intel.nested=0",
+  "kvm-amd.nested=0",
+  "iommu=force",
+  "intel_iommu=on",
+  "amd_iommu=force_isolation",
   "iommu.strict=1",
   "iommu.passthrough=0",
   "efi=disable_early_pci_dma",
+  # sshd only on the network port, never auto-bound to vsock/AF_UNIX
+  "systemd.ssh_auto=no",
   "rd.shell=0",
   "rd.emergency=reboot",
 ]
