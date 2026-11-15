@@ -261,7 +261,7 @@ every commit.
 
 Measured in QEMU: the image is 129 layers, 1.33 GiB with zstd (was one 4G
 layer; 1.75 GiB before stripping, below). An update after a full rebuild of a new commit (`make build
-TREE_BUILD_FLAGS=--no-cache`, as CI does) downloaded 222 MiB: the UKI
+TREE_BUILD_FLAGS=--no-cache`) downloaded 222 MiB: the UKI
 (~92M, new digest every build), the initramfs (~74M, dracut is not
 reproducible), rpmdb, hwdb, SELinux policy store and the rebuilt nvidia.ko.
 Package updates add the layers of the packages that changed.
@@ -314,6 +314,15 @@ and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
 `make build` inside `quay.io/podman/stable` (a current podman, like local
 builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
 and fails if the db key turns up anywhere in the image.
+
+The `tree` stage's layer cache is kept in `ghcr.io/<owner>/labhf-cache`
+(`--cache-from`/`--cache-to`, one tag per build step), so a run only rebuilds
+the steps whose inputs changed; chunkah and the seal run every time. A new
+digest of `quay.io/fedora/fedora-bootc` (frequent) invalidates every step after
+`FROM`. Package updates that land without a new base image wait for the next
+one. Keep the `labhf-cache`
+package private, and prune old tags now and then; the dnf download cache
+(`--mount=type=cache`) is not part of it.
 
 Signing needs three repository secrets. Only the **db** key goes to GitHub;
 `PK.key`/`KEK.key` stay offline:
