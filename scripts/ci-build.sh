@@ -27,7 +27,7 @@ make build PODMAN=podman IMAGE=localhost/labhf:ci BUILD_ARGS="$BUILD_LABELS" \
 
 # the db key is a build secret only: make sure no copy of it is in the image
 needle=$(sed -n 2p keys/db.key)
-if podman run --rm --network=none -e NEEDLE="$needle" localhost/labhf:ci \
+if podman run --rm -e NEEDLE="$needle" localhost/labhf:ci \
         sh -c 'grep -rlsF -m1 -e "$NEEDLE" /usr /etc /boot /var /opt 2>/dev/null' | grep -q .; then
     echo "::error::the Secure Boot db key was found in the image" >&2; exit 1
 fi
