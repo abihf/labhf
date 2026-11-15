@@ -217,7 +217,8 @@ into RAM or onto the state volume):
 The RAID is mounted with `context=system_u:object_r:container_file_t:s0`, so
 with SELinux enforcing k3s pods may use it through hostPath and 11T never needs
 relabelling. `/home/public` gets the same type from an fcontext rule the image
-ships (`semanage fcontext -l -C`); after copying data in, run
+ships (in `/etc/selinux/targeted/active/file_contexts.local`; check with
+`matchpathcon /home/public`); after copying data in, run
 `sudo restorecon -R /home/public`.
 
 `sysroot-state.mount` mounts p3 twice: in the initrd (bootc-root-setup.service
@@ -469,8 +470,18 @@ existing install) belong in a git-ignored `MIGRATION.md`.
 6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
    data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
    new one (destroys the disks).
-7. k3s hostPaths outside `/media/*` need an SELinux label pods may use, e.g.
-   `sudo semanage fcontext -a -t container_file_t '/var/home/abi/compose(/.*)?' && sudo restorecon -R /var/home/abi/compose` (SELinux rules need the `/var/home` path: `/home` is an equivalence alias).
+7. k3s hostPaths outside `/media/*` need an SELinux label pods may use. There
+   is no Python, so no `semanage`: add the rule to the policy store's local
+   file contexts (what `semanage fcontext -a` writes) and rebuild with
+   `semodule`. The rule needs the `/var/home` path: `/home` is an equivalence
+   alias. A policy module's `filecon` won't do, because home directory rules
+   override it.
+   ```bash
+   echo '/var/home/abi/compose(/.*)?    system_u:object_r:container_file_t:s0' | sudo tee -a /etc/selinux/targeted/active/file_contexts.local
+   sudo semodule -B && sudo restorecon -R /var/home/abi/compose
+   ```
+   To remove it, delete the line and run `semodule -B` again. `chcon -t container_file_t`
+   labels at once but doesn't last: the next `restorecon` resets it.
 
 After a BIOS, GPU firmware or dbx update the TPM won't unlock: type the
 LUKS passphrase, then rerun `labhf-enroll-tpm`.
@@ -485,6 +496,7 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
 | Boot | `rd.shell=0 rd.emergency=reboot`, debug shell and Ctrl-Alt-Del masked, no serial console |
 | Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`), plus secureblue's list (`61-labhf-secureblue.conf`): IPsec/xfrm, l2tp, RxRPC, RDMA, NFS/CIFS/sunrpc, cdrom, DVB, joysticks, IR remotes, debug/test drivers. k3s volumes can't use NFS or SMB |
 | Files | Setuid allow-list: only `sudo`, `passwd`, `unix_chkpwd`, `nvidia-modprobe`. `/home` is `nosuid,nodev`. No core dumps |
+| Packages | No Python (so no `semanage`, `audit2allow` or setools), no desktop portals, file indexer, audio stack, `nvidia-settings`/gtk3, shim or grub; none of the full base's sssd/samba, NFS client, LVM/udisks, clevis, fwupd, avahi or polkit (`build/packages.sh`). systemd-homed masked |
 | k3s | Secrets encrypted, `protect-kernel-defaults`, API audit log (metadata only) in `/var/lib/rancher/k3s/server/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
 | Kiosk | `NoNewPrivileges`, read-only system, private `/tmp`, restricted address families. Not `ProtectKernelTunables`, `ProtectKernelLogs` or `ProtectHostname`: each masks part of `/proc`, and WebKit's sandbox then can't mount its own |
 | Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, k3s, SELinux) |

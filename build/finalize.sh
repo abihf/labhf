@@ -38,6 +38,8 @@ systemctl mask --force ctrl-alt-del.target debug-shell.service
 # sunrpc can't load (modprobe.d/61-labhf-secureblue.conf); nfs-utils comes with
 # the base image and its rpc_pipefs mount would fail every boot
 systemctl mask var-lib-nfs-rpc_pipefs.mount rpc_pipefs.target
+# accounts come from sysusers, no home areas; homed ships in systemd-udev here
+systemctl mask systemd-homed.service systemd-homed-activate.service
 # no debugfs (debugfs=off) or tracefs mounts
 systemctl mask sys-kernel-debug.mount sys-kernel-tracing.mount
 
@@ -78,9 +80,14 @@ mkdir -p /media/data /media/backup
 ln -s /home/public /media/public
 
 # pods (k3s hostPath) may read/write /home/public; the policy maps /home to
-# /var/home, so one rule covers both. Stored in /etc/selinux (store-root),
-# i.e. it ships in the image and survives local `semanage fcontext -a`.
-semanage fcontext -a -t container_file_t '/var/home/public(/.*)?'
+# /var/home, so one rule covers both. It has to be a local rule: those come
+# after the home directory rules (/var/home/[^/]+ -> user_home_dir_t), which a
+# policy module's filecon can't override. No Python, so no semanage: write the
+# store's file_contexts.local, which semanage would write, and rebuild with
+# semodule (C). The store is in /etc/selinux, so the rule ships in the image.
+printf '%s\n' '/var/home/public(/.*)?    system_u:object_r:container_file_t:s0' \
+    >> /etc/selinux/targeted/active/file_contexts.local
+semodule -B
 for p in /home/public /var/home/public /home/public/x; do
     [[ $(matchpathcon -n "$p") == *:container_file_t:* ]] || { echo "bad label for $p: $(matchpathcon -n "$p")" >&2; exit 1; }
 done

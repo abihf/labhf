@@ -10,9 +10,9 @@ sec() { printf '\n== %s\n' "$*"; }
 
 sec "state"
 systemctl is-system-running; systemctl --failed --no-legend --plain | cut -c1-80
-bootc status --format=json 2>/dev/null | python3 -c 'import json,sys
-s=json.load(sys.stdin)["status"]; b=s["booted"]["image"]
-print("booted:", b["image"]["image"], b["imageDigest"])'
+bootc status --format=json 2>/dev/null |
+    jq -r '.status.booted.image | "booted: \(.image.image) \(.imageDigest)"'
+command -v python3 >/dev/null && echo "python3 PRESENT" || echo "no python3"
 systemd-cryptenroll /dev/disk/by-partlabel/state | tr '\n' ' '; echo
 echo "TPM unlock this boot: $(journalctl -b -u systemd-cryptsetup@state --no-pager | grep -c 'TPM2 token unlocks')"
 bootctl status 2>/dev/null | grep -E 'Secure Boot'; cat /sys/kernel/security/lockdown
