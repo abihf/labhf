@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the sealed labhf image and push it to ghcr.io/<owner>/labhf.
+# Pull requests are built too (job pr-build), but signed with throwaway keys
+# generated in the job and never pushed: no secret is ever exposed to PR code.
 #
 # Repository secrets (see README "CI: GitHub Actions"):
 #   SB_DB_KEY    keys/db.key  (Secure Boot db private key; PK/KEK stay offline)
@@ -14,20 +16,26 @@ on:
   schedule:
     - cron: '23 3 * * 1'   # weekly rebuild: Fedora, NVIDIA and security updates
   workflow_dispatch:
-  # No pull_request trigger: fork PRs get no secrets, and the db key must never
-  # be exposed to code from a PR.
+  # pull_request, never pull_request_target: PR code runs without secrets
+  # and with a read-only token
+  pull_request:
+    paths-ignore: ['README.md', 'LICENSE']
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: false
+  # a new push to a PR replaces its running build; main's builds all finish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 240
     steps:
       # third-party code pinned by commit / digest: this job holds the db key
@@ -99,6 +107,66 @@ jobs:
             quay.io/podman/stable:v5.8.9@sha256:f7a17ef911a2b9b866ada8a9426a07e29a6e4f8109ef8c0e0b7010c2541b4e49 \
             bash scripts/ci-build.sh
 
+      - name: Size report
+        if: always()
+        run: if [[ -f ci-sizes.md ]]; then cat ci-sizes.md >> "$GITHUB_STEP_SUMMARY"; fi
+
       - name: Remove signing material
         if: always()
         run: rm -rf keys
+
+  # Same build for pull requests, with no secrets and nothing pushed. The
+  # Secure Boot keys are generated here and thrown away: the image is not
+  # bootable on the real PC, but every build step, the module and UKI
+  # signing and the checks run as on main.
+  pr-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: read    # the layer cache; read-only, so PR code can't write it
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Check disk space
+        run: |
+          df -h / /mnt
+          free_gb=$(df --output=avail -BG /mnt | tail -1 | tr -dc 0-9)
+          (( free_gb >= 40 )) || { echo "::error::only ${free_gb}G free on /mnt, need 40G"; exit 1; }
+
+      - name: Generate throwaway Secure Boot keys
+        run: |
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q sbsigntool uuid-runtime >/dev/null
+          mkdir -p keys
+          KEYS_DIR=keys INCLUDE_MS_CA=0 bash scripts/gen-keys.sh >/dev/null
+          ls keys/db.key keys/db.crt keys/auth/PK.auth keys/auth/KEK.auth keys/auth/db.auth
+
+      - name: Compute settings
+        run: |
+          echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/labhf" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build (no push)
+        env:
+          PUSH: '0'
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_LABELS: >-
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            --label org.opencontainers.image.revision=${{ github.sha }}
+            --label org.opencontainers.image.licenses=GPL-3.0-or-later
+        run: |
+          sudo mkdir -p /mnt/containers
+          docker run --rm --privileged \
+            -v "$PWD:/src" -w /src \
+            -v /mnt/containers:/var/lib/containers \
+            -e IMAGE_REPO -e PUSH -e REGISTRY_USER -e REGISTRY_TOKEN -e BUILD_LABELS -e SOURCE_DATE_EPOCH \
+            quay.io/podman/stable:v5.8.9@sha256:f7a17ef911a2b9b866ada8a9426a07e29a6e4f8109ef8c0e0b7010c2541b4e49 \
+            bash scripts/ci-build.sh
+
+      - name: Size report
+        if: always()
+        run: if [[ -f ci-sizes.md ]]; then cat ci-sizes.md >> "$GITHUB_STEP_SUMMARY"; fi

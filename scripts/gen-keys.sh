@@ -1,7 +1,8 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Generate Secure Boot PK/KEK/db and signed .auth enrollment files.
-# Runs inside the tools container (see Makefile `keys`), output in ./keys.
+# Runs inside the tools container (see Makefile `keys`), output in ./keys
+# (KEYS_DIR=DIR elsewhere, e.g. CI's throwaway keys for pull requests).
 #   keys/{PK,KEK,db}.{key,crt}    private keys stay HERE (db.key = CI secret)
 #   keys/auth/{PK,KEK,db}.auth    for systemd-boot auto-enroll on the real PC
 #   keys/GUID
@@ -11,7 +12,7 @@
 # Linux live USBs boot too (they can't unlock state: PCR 7 differs). Already
 # using sbctl with option ROM hashes? Use `make import-sbctl` instead.
 set -euo pipefail
-cd /work/keys
+cd "${KEYS_DIR:-/work/keys}"
 
 if [[ -e db.key ]]; then
     echo "keys/db.key already exists; refusing to overwrite" >&2

@@ -11,3 +11,5 @@ vm/
 
 # machine-specific migration notes (hardware, disks, network): private
 MIGRATION.md
+# CI size report (scripts/ci-build.sh)
+/ci-sizes.md
