@@ -3,8 +3,7 @@
 # Checks for an installed labhf VM, run inside it as root:
 #   ssh -p 2222 abi@localhost sudo bash -s < scripts/vm-check.sh
 # Read-mostly. Temporarily creates a network namespace (fake LAN client), a
-# test pod and a k8s secret, and starts gui.service without enabling it; all
-# are removed again. Prints results; it does not judge them all.
+# test pod and a k8s secret; all are removed again. Prints results; it does not judge them all.
 set -uo pipefail
 sec() { printf '\n== %s\n' "$*"; }
 
@@ -35,7 +34,7 @@ echo "nvidia signer: $(modinfo -F signer nvidia)"
 sec "access"
 /usr/sbin/sshd -T 2>/dev/null | grep -iE '^(permitrootlogin|allowusers|passwordauthentication|maxauthtries|allowtcpforwarding) ' | tr '\n' ';'; echo
 ls /etc/ssh/authorized_keys.d/ | tr '\n' ' '; echo
-passwd -S root | cut -d' ' -f1-2; getent passwd gui | cut -d: -f7
+passwd -S root | cut -d' ' -f1-2
 find /usr -xdev -type f -perm /6000 | tr '\n' ' '; echo
 ls /etc/sudoers.d/ | tr '\n' ' '; echo
 findmnt -no OPTIONS /var/home | cut -c1-40
@@ -76,15 +75,6 @@ kubectl delete pod labhf-check --wait=false >/dev/null; rm -f /home/public/labhf
 kubectl create secret generic labhf-check --from-literal=k=LABHFCHECKVALUE >/dev/null
 echo "secret in plaintext in the db: $(strings /var/lib/rancher/k3s/server/db/state.db 2>/dev/null | grep -c LABHFCHECKVALUE)"
 kubectl delete secret labhf-check >/dev/null
-
-sec "kiosk (started, not enabled)"
-systemctl is-enabled gui; systemctl start gui
-for i in $(seq 1 15); do pgrep -x WPEWebProcess >/dev/null && break; sleep 2; done; sleep 5
-echo "gui: $(systemctl is-active gui), restarts $(systemctl show gui -p NRestarts --value)"
-for p in $(pgrep -x WPEWebProcess) $(pgrep -x cage); do
-    echo "  $(cat /proc/$p/comm): $(grep -oE 'libgallium[^ ]*' /proc/$p/maps | sort -u) NoNewPrivs=$(awk '/NoNewPrivs/{print $2}' /proc/$p/status)"
-done
-systemctl stop gui
 
 sec "SELinux denials this boot"
 ausearch --input-logs -m avc -ts boot 2>&1 | grep -c 'avc:' || true

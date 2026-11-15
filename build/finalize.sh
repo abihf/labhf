@@ -20,8 +20,6 @@ systemctl enable \
     labhf-firstboot-passwd.service \
     sysroot-state.mount
 systemctl set-default multi-user.target
-# gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
-# must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.
 # DNS from networkd (DNS= / DHCP), via resolved's uplink file: programs that
 # read resolv.conf (dig, containerd, k3s, Go binaries) ask the network's DNS
 # servers directly. Not the stub (127.0.0.53): a k3s LoadBalancer or hostPort

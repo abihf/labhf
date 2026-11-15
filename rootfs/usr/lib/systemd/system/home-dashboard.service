@@ -1,12 +1,11 @@
 [Unit]
-Description=Home dashboard server (the page the kiosk shows)
+Description=Home dashboard server
 Documentation=https://github.com/abihf/home-dashboard
 After=network.target
-Before=gui.service
 
 [Service]
 Type=simple
-# Only the kiosk on this machine needs it
+# localhost only
 Environment=HOST=127.0.0.1 PORT=3000
 # Background images are read from BG_DIR at runtime (not in the executable).
 # Machine-local overrides (BG_DIR, PORT, ...): /etc/labhf/home-dashboard.env

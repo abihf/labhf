@@ -17,11 +17,6 @@ dnf -y install \
     "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedver}.noarch.rpm" \
     "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${fedver}.noarch.rpm"
 
-# WPE WebKit was retired from Fedora; unofficial COPR by an Igalia dev.
-# Provides /usr/libexec/wpe-webkit-2.0/MiniBrowser.
-curl -fsSL -o /etc/yum.repos.d/philn-wpewebkit.repo \
-    "https://copr.fedorainfracloud.org/coprs/philn/wpewebkit/repo/fedora-${fedver}/philn-wpewebkit-fedora-${fedver}.repo"
-
 curl -fsSL -o /etc/yum.repos.d/nvidia-container-toolkit.repo \
     https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo
 
@@ -52,9 +47,6 @@ dnf -y install \
     systemd-networkd wireguard-tools kea \
     container-selinux k3s-selinux \
     policycoreutils-python-utils setools-console audit \
-    cage wlr-randr wpewebkit \
-    mesa-dri-drivers \
-    google-noto-sans-fonts google-noto-emoji-fonts \
     nvidia-container-toolkit \
     "xorg-x11-drv-nvidia-${nvidia_evr}" \
     "xorg-x11-drv-nvidia-cuda-${nvidia_evr}" \
@@ -95,18 +87,20 @@ strip_pkgs=(
     intel-gpu-firmware intel-npu-firmware intel-audio-firmware cirrus-audio-firmware
     microcode_ctl                              # Intel CPU microcode (AMD here)
     intel-mediasdk                             # Intel video (libvpl weak dep)
-    mesa-vulkan-drivers                        # weak dep; cage/WPE render with GL (174M)
+    mesa-vulkan-drivers                        # weak dep of vulkan-loader; no Mesa GPU in use (174M)
     kexec-tools makedumpfile                   # no kdump: kexec_load_disabled=1
-    # not flite (WebKit's speech synthesis) or x265-libs (libheif-freeworld):
-    # removing either takes wpewebkit with it
 )
 mapfile -t present < <(rpm -qa --qf '%{NAME}\n' "${strip_pkgs[@]}" | sort -u)
 (( ${#present[@]} )) && dnf -y remove "${present[@]}"
-keep=(kernel-core bootc skopeo podman wpewebkit cage mesa-dri-drivers llvm-libs
+keep=(kernel-core bootc skopeo podman
       linux-firmware amd-gpu-firmware amd-ucode-firmware realtek-firmware
       xorg-x11-drv-nvidia xorg-x11-drv-nvidia-cuda-libs nvidia-container-toolkit
       container-selinux k3s-selinux systemd-networkd)
 rpm -q "${keep[@]}"
+# Headless now (no kiosk): log any GL/media stack something still pulls in
+for p in mesa-dri-drivers llvm-libs gtk3 gstreamer1 pipewire-libs; do
+    rpm -q "$p" >/dev/null && echo "still installed: $p, needed by: $(rpm -q --whatrequires "$p" --qf '%{NAME} ' 2>/dev/null)"
+done
 if rpm -qa 'qemu-user-static*' python3-botocore nvidia-gpu-firmware | grep .; then
     echo "strip list not removed" >&2; exit 1
 fi

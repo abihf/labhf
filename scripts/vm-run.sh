@@ -4,7 +4,7 @@
 # 3 extra disks for RAID5 testing. ssh: `ssh -p 2222 root@localhost`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${VM_MEM:=6G}" "${VM_CPUS:=4}" "${VM_GL:=1}" "${VM_INSTALLER:=0}" "${VM_NETBOOT:=}"
+: "${VM_MEM:=6G}" "${VM_CPUS:=4}" "${VM_INSTALLER:=0}" "${VM_NETBOOT:=}"
 # VM_NETBOOT=DIR: the NIC boots first, QEMU's DHCP hands out DIR/labhf-installer.efi
 # over TFTP (UEFI PXE, with Secure Boot)
 nic=(-netdev "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443${VM_NETBOOT:+,tftp=$VM_NETBOOT,bootfile=labhf-installer.efi}"
@@ -21,14 +21,7 @@ if (( VM_INSTALLER )); then
            -drive if=none,id=usbstick,format=raw,file=vm/usb-test.img
            -device usb-storage,bus=xhci.0,drive=usbstick)
 fi
-# virgl (VM_GL=1): the guest render node gets real 3D. Without it, WebKit's web
-# process can't allocate buffers (dumb buffers are refused on render nodes) and
-# MiniBrowser stays black. VM_GL=0: plain virtio-vga, e.g. without host GL.
-if (( VM_GL )); then
-    gpu=virtio-vga-gl; : "${VM_DISPLAY:=gtk,gl=on}"
-else
-    gpu=virtio-vga;    : "${VM_DISPLAY:=gtk}"
-fi
+: "${VM_DISPLAY:=gtk}"
 
 mkdir -p vm/tpm
 [[ -f vm/OVMF_CODE.secboot.qcow2 ]] || { echo "old 2M firmware (no TPM): run make vm-clean vm-vars" >&2; exit 1; }
@@ -54,6 +47,6 @@ exec qemu-system-x86_64 \
     -drive file=vm/raid1.qcow2,if=virtio -drive file=vm/raid2.qcow2,if=virtio \
     -drive file=vm/raid3.qcow2,if=virtio \
     "${nic[@]}" \
-    -device "$gpu" -display "$VM_DISPLAY" \
+    -device virtio-vga -display "$VM_DISPLAY" \
     -serial mon:stdio \
     "${extra[@]}"

@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Install the home-dashboard server (the page the kiosk shows): a single
+# Install the home-dashboard server: a single
 # executable from https://github.com/abihf/home-dashboard/releases, pinned and
 # checksummed. Served by home-dashboard.service on 127.0.0.1:3000.
 set -euxo pipefail

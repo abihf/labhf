@@ -16,8 +16,8 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
-| Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by the installer; `gui` (uid 2000) runs the dashboard |
-| Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000`, served by `home-dashboard.service` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
+| Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by the installer |
+| Dashboard | `home-dashboard.service` on `http://localhost:3000` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
 
 ## Layout
 
@@ -68,38 +68,6 @@ labhf-enroll-tpm             # bind LUKS state to TPM (PCR 0,2,3,5,7 + 15=0)
 reboot                       # should unlock without a prompt
 labhf-setup-raid create /dev/vdb /dev/vdc /dev/vdd   # RAID5 test (adopt: reuse one)
 ```
-
-### Dashboard settings (`/etc/labhf/gui.env`)
-
-`gui.service` runs [`labhf-gui`](rootfs/usr/bin/labhf-gui). The PC has two
-GPUs, and `cardN` numbers depend on driver load order, so the script picks
-the card by kernel driver (`GUI_GPU`, default `amdgpu`; falls back to any
-non-NVIDIA card, then any card). It pins cage (`WLR_DRM_DEVICES`,
-`WLR_RENDER_DRM_DEVICE`), WebKit (`WEBKIT_WEB_RENDER_DEVICE_FILE`) and Mesa's
-EGL (NVIDIA's EGL is skipped) to that card, rotates the output, then runs
-MiniBrowser. Settings live in a machine-local env file (survives `bootc upgrade`):
-
-```bash
-sudo tee /etc/labhf/gui.env <<'EOF'
-GUI_URL=http://localhost:3000
-GUI_GPU=amdgpu          # driver name: amdgpu, i915, xe, nvidia
-GUI_OUTPUT=HDMI-A-1     # output to rotate, "all", or empty for none
-GUI_TRANSFORM=90        # normal, 90, 180, 270, flipped-90, ...
-#GUI_BROWSER_ARGS=--bg-color=black
-EOF
-sudo systemctl restart gui.service
-journalctl -b -u gui.service | grep labhf-gui:   # which GPU/output it picked
-```
-
-In QEMU (output `Virtual-1`, no AMD card) only `GUI_TRANSFORM=normal` is
-needed. Images built before `labhf-gui` used an `ExecStart=` drop-in in
-`/etc/systemd/system/gui.service.d/` instead. Remove it after upgrading:
-`sudo rm -r /etc/systemd/system/gui.service.d && sudo systemctl daemon-reload`.
-
-`make vm-run` uses a virgl GPU (`virtio-vga-gl`, `gtk,gl=on`). With plain
-`virtio-vga` (`VM_GL=0 make vm-run`) the guest has no 3D, WebKit's web process
-fails with `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied`, and the
-page stays black. Switching the GPU kept TPM unlock working (PCRs unchanged).
 
 ### Network
 
@@ -274,16 +242,20 @@ layers stay accurate), what this machine never uses: `qemu-user-static-*`
 `s3transfer`), `nvidia-gpu-firmware` (nouveau's; the driver's own firmware
 comes with `xorg-x11-drv-nvidia`), Wi-Fi/WWAN and Intel GPU/NPU/audio
 firmware, `microcode_ctl` (Intel CPU), `intel-mediasdk` and
-`mesa-vulkan-drivers` (cage and WPE render with GL). Our packages install
+`mesa-vulkan-drivers` (no Mesa GPU is used). Our packages install
 without `%doc`, and only English translations are kept; the base image's docs,
 man pages and other translations are deleted. Licenses stay (the image is
 redistributed). The build fails if a removal ever takes a package that matters
-(kernel, bootc, skopeo, WPE/cage/Mesa, NVIDIA, AMD/Realtek firmware, k3s
-SELinux). Not removable: `flite` (WebKit speech synthesis) and `x265-libs`
-(via libheif-freeworld); either takes `wpewebkit` with it. The rpmdb stays:
+(kernel, bootc, skopeo, NVIDIA, AMD/Realtek firmware, k3s SELinux). The
+machine is headless: no compositor, browser, Mesa GL or fonts. The rpmdb stays:
 chunkah needs it for the layers, and scanners and `rpm -qf` need it.
 Uncompressed tree: 3.9G → 2.9G. Different hardware (Wi-Fi, Intel) may need
 some of these back.
+
+Images up to the kiosk's removal had a `gui` user and `gui.service` (cage +
+WPE WebKit on tty1). `/etc` and `/var` keep what they left behind after an
+upgrade; to clean up: `sudo systemctl disable gui.service; sudo userdel -r gui;
+sudo rm -f /etc/labhf/gui.env`.
 
 `/etc` is machine-local and 3-way merged on upgrade (k3s config,
 crypttab, mdadm.conf live there). Local deletions survive too, e.g. a
@@ -310,7 +282,11 @@ in the VM. `sudo bootc rollback && sudo reboot` returns to the previous image.
 
 [`.github/workflows/image.yml`](.github/workflows/image.yml) builds the sealed
 image on every push to `main`, weekly (Fedora/NVIDIA updates) and on demand,
-and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. It runs
+and pushes `ghcr.io/<owner>/labhf:{latest,YYYYMMDD,sha-<commit>}`. Pull
+requests get the same build (job `pr-build`) with throwaway Secure Boot keys
+generated in the job, a read-only token (the layer cache is read, never
+written) and nothing pushed. Both jobs add a size report (image, `/usr`, the
+largest packages) to the run's summary. It runs
 `make build` inside `quay.io/podman/stable` (a current podman, like local
 builds; Ubuntu's podman is too old) via [`scripts/ci-build.sh`](scripts/ci-build.sh),
 and fails if the db key turns up anywhere in the image.
@@ -335,7 +311,8 @@ tar -C keys -cz auth | base64 -w0 | gh secret set SB_AUTH_TGZ   # public .auth f
 
 Anyone with write access to the repo's workflows can use the db key, and an
 image signed with it boots on the PC: keep the repo's collaborators and
-Actions settings tight. Pull requests are never built with the secrets.
+Actions settings tight. Pull requests are never built with the secrets
+(`pull_request`, never `pull_request_target`).
 The checkout action and the podman image are pinned by commit / digest
 (bump them deliberately), since this job holds the key.
 
@@ -464,8 +441,7 @@ existing install) belong in a git-ignored `MIGRATION.md`.
    differs), but prefer option ROM hashes (sbctl) and a BIOS password.
 5. Boot, type the LUKS passphrase, run `labhf-enroll-tpm`. The passphrase
    stays as the only fallback (there is no recovery key), so make it strong.
-   Reboot once to check the unattended unlock, then start the kiosk, which
-   the image leaves disabled: `sudo systemctl enable --now gui.service`.
+   Reboot once to check the unattended unlock.
 6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
    data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
    new one (destroys the disks).
@@ -480,13 +456,12 @@ LUKS passphrase, then rerun `labhf-enroll-tpm`.
 | Area | What the image does |
 |---|---|
 | SSH | Keys only; `AllowUsers abi`, no root login, no agent/X11 forwarding or tunnels, `AllowTcpForwarding local` (for `ssh -L 6443`), `MaxAuthTries 3`; firewall limits new connections per source (burst 20, then 10/min) |
-| Accounts | `root` and `gui` locked, `gui` has no shell; sudo asks for a password, `use_pty`, 5-minute timestamp; 5 failed passwords lock the account for 5 minutes (console, sudo) |
+| Accounts | `root` locked; sudo asks for a password, `use_pty`, 5-minute timestamp; 5 failed passwords lock the account for 5 minutes (console, sudo) |
 | Kernel | `lockdown=confidentiality` (no kprobes, tracefs, kernel perf, BPF kernel reads, `/proc/kcore` or `/dev/mem`, even for root), `module.sig_enforce=1`, `debugfs=off`, no ftrace or tracefs mount, perf sampling at 1/s, no kexec-tools, `oops=panic`; `kptr_restrict`, `dmesg_restrict`, `hash_pointers=always`, no unprivileged BPF, userfaultfd, io_uring or perf, ptrace scope 1, no kexec, SysRq or binfmt_misc; `init_on_alloc`, `init_on_free`, `slab_nomerge`, `randomize_kstack_offset`, max mmap ASLR; no 32-bit userspace (`vsyscall=none vdso32=0 ia32_emulation=0`); RDRAND and boot loader seed not credited; no nested KVM; forced, strict IOMMU, `efi=disable_early_pci_dma`. Mostly secureblue's set, minus forced CPU mitigations, `nosmt` and `slab_debug` (performance) |
 | Boot | `rd.shell=0 rd.emergency=reboot`, debug shell and Ctrl-Alt-Del masked, no serial console |
 | Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`), plus secureblue's list (`61-labhf-secureblue.conf`): IPsec/xfrm, l2tp, RxRPC, RDMA, NFS/CIFS/sunrpc, cdrom, DVB, joysticks, IR remotes, debug/test drivers. k3s volumes can't use NFS or SMB |
 | Files | Setuid allow-list: only `sudo`, `passwd`, `unix_chkpwd`, `nvidia-modprobe`. `/home` is `nosuid,nodev`. No core dumps |
 | k3s | Secrets encrypted, `protect-kernel-defaults`, API audit log (metadata only) in `/var/lib/rancher/k3s/server/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
-| Kiosk | `NoNewPrivileges`, read-only system, private `/tmp`, restricted address families. Not `ProtectKernelTunables`, `ProtectKernelLogs` or `ProtectHostname`: each masks part of `/proc`, and WebKit's sandbox then can't mount its own |
 | Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, k3s, SELinux) |
 
 `kernel.panic_on_oops=1` and `kernel.panic=10` are required by
@@ -541,14 +516,6 @@ path was not triggered.
   chunking matches), TPM unlock, signed modules load.
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
-- **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
-  Fedora). Fallback: `webkitgtk6.0`/epiphany or chromium `--kiosk`.
-- **Dashboard GPU**: `labhf-gui` is tested in QEMU only (virtio fallback,
-  rotation). On the real PC check `journalctl -b -u gui.service | grep labhf-gui:`
-  says `amdgpu` and the HDMI output name matches `GUI_OUTPUT` (`wlr-randr`
-  lists outputs). The integrated GPU must stay enabled in the firmware when
-  the NVIDIA card is installed (often "iGPU multi-monitor" / "IGD").
-  See [Dashboard settings](#dashboard-settings-etclabhfguienv).
 - Sealed images are Tech Preview upstream; composefs has no boot counting /
   automatic rollback yet.
 - Kernel args are fixed in the signed UKI; change them in
