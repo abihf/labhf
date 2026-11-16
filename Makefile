@@ -105,7 +105,7 @@ build: keys/db.key
 	  --security-opt label=disable \
 	  --build-context keys=$(KEYS_DIR) \
 	  $(TREE_BUILD_FLAGS) --target rootfs -t $(ROOTFS_IMAGE) -f Containerfile .
-	$(PODMAN) build --network=none --build-arg ROOTFS=$(ROOTFS_IMAGE) \
+	$(PODMAN) build --build-arg ROOTFS=$(ROOTFS_IMAGE) \
 	  --security-opt label=disable \
 	  -t $(TREE_IMAGE) -f Containerfile.tree .
 	sde=$(or $(SOURCE_DATE_EPOCH),$$($(PODMAN) run --rm --network=none --security-opt label=disable \
