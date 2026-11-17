@@ -89,8 +89,8 @@ RUN --network=none \
 
 # the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
 FROM scratch AS home-dashboard-src
-ARG HOME_DASHBOARD_VERSION=v0.0.2
-ARG HOME_DASHBOARD_SHA256=66e8ce33a8602b3fe8a72b98e112a85a67b886bb348932a7b75b6a7158671003
+ARG HOME_DASHBOARD_VERSION=v0.0.3
+ARG HOME_DASHBOARD_SHA256=ef9d41a34e76e0a55364e07e491f8de55fda55802e8c6103bfca530f9a030e5b
 ADD --link --checksum=sha256:${HOME_DASHBOARD_SHA256} \
     https://github.com/abihf/home-dashboard/releases/download/${HOME_DASHBOARD_VERSION}/home-dashboard-${HOME_DASHBOARD_VERSION}-linux-x64.tar.gz \
     /home-dashboard.tar.gz
