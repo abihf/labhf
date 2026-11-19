@@ -17,7 +17,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
-| Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by the installer; `gui` (uid 2000) runs the dashboard |
+| Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by `labhf-install-disk`; `gui` (uid 2000) runs the dashboard |
 | Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000`, served by `home-dashboard.service` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
 
 ## Layout
@@ -30,7 +30,7 @@ Containerfile.tools    host helper container: openssl, sbsigntools, virt-fw-vars
 build/                 scripts run inside build stages
 rootfs/                files copied into the image
   usr/lib/bootc/kargs.d/      kernel args → baked into the signed UKI
-  usr/lib/labhf/repart.d/     disk layout for the installer
+  usr/lib/labhf/repart.d/     disk layout (systemd-repart, used by labhf-install-disk)
   usr/bin/labhf-*             install-disk, enroll-tpm, pcrlock, setup-raid
 scripts/               host scripts (keys, OVMF vars, QEMU, CI build)
 .github/workflows/     CI: build + push to ghcr.io
@@ -89,11 +89,12 @@ GUI_TRANSFORM=90        # normal, 90, 180, 270, flipped-90, ...
 #GUI_BROWSER_ARGS=--bg-color=black
 EOF
 sudo systemctl restart gui.service
-journalctl -b -u gui.service | grep labhf-gui:   # which GPU/output it picked
+journalctl -b -t labhf-gui | grep labhf-gui:     # which GPU/output it picked
 ```
 
-In QEMU (output `Virtual-1`, no AMD card) only `GUI_TRANSFORM=normal` is
-needed. Images built before `labhf-gui` used an `ExecStart=` drop-in in
+The script's output is in the login session's scope (`PAMName=`), not
+under `-u gui.service`, hence `-t`. In QEMU (output `Virtual-1`, no AMD card)
+only `GUI_TRANSFORM=normal` is needed. Images built before `labhf-gui` used an `ExecStart=` drop-in in
 `/etc/systemd/system/gui.service.d/` instead. Remove it after upgrading:
 `sudo rm -r /etc/systemd/system/gui.service.d && sudo systemctl daemon-reload`.
 
@@ -202,7 +203,7 @@ p2 root   ext4 40G     PLAIN: /composefs (image objects), /state = mount point
 p3 state  LUKS2 ext4   deploy/<id>/etc, os/default/var  -> /etc, /var, /home
 ```
 
-state takes all space after root (~215G on the 256G NVMe), including the fast
+state takes all space after root (197.5G on the PC's 256G NVMe), including the fast
 shared data in `/home/public`.
 
 Data mounts (`/media` is a real directory on the sealed root, not Fedora's
@@ -216,7 +217,7 @@ into RAM or onto the state volume):
 | `/media/backup` | backup disk, fstab by UUID | by hand (fstab, e.g. `x-systemd.automount`) | |
 
 The RAID is mounted with `context=system_u:object_r:container_file_t:s0`, so
-with SELinux enforcing k3s pods may use it through hostPath and 11T never needs
+with SELinux enforcing k3s pods may use it through hostPath and 22T never needs
 relabelling. `/home/public` gets the same type from an fcontext rule the image
 ships (in `/etc/selinux/targeted/active/file_contexts.local`; check with
 `matchpathcon /home/public`); after copying data in, run
@@ -243,8 +244,8 @@ Deploying a new image or fixing `/etc` needs `state` unlocked (LUKS passphrase):
 
 ## Updates
 
-Push the image to a registry and point the machine at it (`TARGET_IMGREF=` at
-install, or `bootc switch <ref>` later). Then `bootc upgrade && reboot`; a new
+Push the image to a registry and point the machine at it (`LABHF_TARGET_IMGREF=` for
+`labhf-install-disk`, or `bootc switch <ref>` later). Then `bootc upgrade && reboot`; a new
 UKI signed by the same db key keeps PCR 7 stable, and `labhf-pcrlock.service`
 adds the staged UKI to the rollback lock at shutdown, so TPM unlock keeps
 working.
@@ -462,14 +463,15 @@ key once it runs labhf: CI signs.
 
 ## Installing on the real PC
 
-`labhf-install-disk` **wipes the whole target disk** (ESP, root, state). Back up anything on it first, and unplug data disks you want to keep
-so it can only see the target. Machine-specific notes (e.g. migrating an
+`labhf-install-disk` **wipes the whole target disk** (ESP, root, state). Back
+up anything on it first, and unplug data disks you want to keep so it can only
+see the target. Machine-specific notes (e.g. migrating an
 existing install) belong in a git-ignored `MIGRATION.md`.
 
 1. Back up `keys/`. Only `keys/db.key` + `keys/db.crt` are needed to build
    (CI secrets); keep `PK.key`/`KEK.key` offline.
 2. Firmware: enable TPM 2.0. **Already using your own keys with sbctl?**
-   Import them (below) and skip the key steps: the firmware keeps what is
+   Import them ([Using existing sbctl keys](#using-existing-sbctl-keys)) and skip the key steps: the firmware keeps what is
    enrolled. Otherwise **clear the Secure Boot keys / enter Setup Mode**.
 3. Boot a live Linux with podman (e.g. Fedora live), then:
    ```bash
@@ -535,71 +537,56 @@ keys in an agent, use `IdentitiesOnly yes` or `MaxAuthTries 3` may reject you.
 `/etc` and `/var` stay writable, so a root compromise can still persist there;
 the sealed image only protects `/usr`.
 
-Verified in QEMU: all of the above, except that QEMU has no IOMMU here (so the
-DMA arguments are untested until real hardware) and the `rd.emergency=reboot`
-path was not triggered.
+Verified in QEMU: all of the above, except the IOMMU (QEMU has none here;
+see [Verified](#verified) for the real PC) and the `rd.emergency=reboot` path
+(not triggered).
+
+## Verified
+
+| What | QEMU | Real PC (`home`) |
+|---|---|---|
+| Fresh install, 3 partitions | ESP 1G / root 40G / state (80G disk); passphrase-only LUKS until `labhf-enroll-tpm`, then unattended TPM2 unlock with the passphrase slot kept; networkd DHCP, DNS through resolved, boot ~14s | ESP 1G / root 40G / state 197.5G; `state` has a tpm2 and a password slot |
+| Split root/state | `bootc switch` + reboot (staged finalize with `/sysroot/state` still mounted, `/etc` merged), `bootc rollback` both ways, TPM unlock across all of them; the plain root's `state/` stays empty | booted + rollback deployment from ghcr.io; the plain root's `state/` is empty (`mount --bind /sysroot /run/x && ls -A /run/x/state`) |
+| Chunked + sealed | `bootc switch`/`upgrade` to the chunkah image boots under Secure Boot (digest computed after chunking matches), TPM unlock, signed modules load | runs the CI-built chunked image |
+| NVIDIA modules | db-signed kmod accepted under lockdown (`.platform` keyring, no shim/MOK); split signing (akmods output unsigned, 5 modules signed in `nvidia-sign`); ESP systemd-boot from `sdboot-sign` boots, TPM unlock unchanged | under Secure Boot + `lockdown=confidentiality` the open module (620.70) loads, `nvidia-smi` lists the RTX 2000 Ada |
+| Data + k3s hostPaths | `labhf-setup-raid adopt`; a pod writes `/media/data` and `/media/public` (→ `/home/public`), files are `container_file_t`, cluster DNS and egress work, SELinux enforcing, no AVCs | 22T RAID5 (4 USB disks) at `/media/data`, `/home/public` `container_file_t`, k3s pods on both |
+| Firewall with k3s | from an untrusted client (veth + netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed; pods keep DNS, egress, the API server and metrics-server → kubelet; k3s's rules unchanged by start, reload and stop; no AVCs | |
+| Dashboard | virtio fallback, rotation | `labhf-gui: gpu card1/renderD128 (amdgpu) ... rotate HDMI-A-1 90` with defaults (no `gui.env`); `HDMI-A-1` the only enabled output, NVIDIA outputs off |
+| IOMMU arguments | (QEMU has no IOMMU here) | AMD-Vi active; NVIDIA, iGPU, NVMe and USB disks all work |
+| TPM rollback lock | pcrlock token unlocks in the initrd (policy from the ESP credential); `bootc upgrade` + reboot records the staged UKI at shutdown and unlocks unattended, the next boot drops the removed deployment; an older db-signed UKI booted as a one-shot entry stops at the passphrase prompt | not yet (see below) |
+
+Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
+`nvidia-device-plugin` pod fail; expected.
 
 ## Open items / known risks
 
-- **Split root/state is not an upstream-tested layout.** Verified in QEMU:
-  `bootc switch` + reboot (staged finalize runs with `/sysroot/state` still
-  mounted, `/etc` merged), `bootc rollback` both ways, TPM unlock across all
-  of them, and the plain root's `state/` directory stays empty
-  (`mount --bind /sysroot /run/x && ls -A /run/x/state`). Re-test after bootc
-  updates.
-
-- **NVIDIA module trust** (verified in QEMU): the kmod is signed with the db
-  key, which the Fedora kernel loads into `.platform` and accepts for modules
-  under lockdown=integrity. `modprobe nvidia` → "No NVIDIA GPU found" in the VM;
-  no shim/MOK needed. Re-check on the real PC (`lsmod | grep nvidia`).
-  Also verified with the split signing (akmods output unsigned, all 5 modules
-  signed in `nvidia-sign`), and a `bootc switch` + ESP systemd-boot from
-  `sdboot-sign` booting under Secure Boot with TPM unlock unchanged.
-- **Fresh install** (verified in QEMU, 80G disk; then with a separate `public`
-  partition, since folded into state): ESP 1G / root 40G / state; passphrase-only LUKS until `labhf-enroll-tpm`, then TPM2
-  unlocks unattended with the passphrase slot kept. networkd DHCP from the
-  image default, resolved stub DNS, boot ~14s. `labhf-setup-raid adopt` of an
-  existing array; a pod with hostPaths `/media/data` and `/home/public`
-  (→ `/media/public`) writes both, cluster DNS and egress work, SELinux
-  enforcing, no AVCs. Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and
-  the `nvidia-device-plugin` pod fail; expected.
-- **`/home/public` on state** (verified in QEMU, fresh install, 3 partitions):
-  a pod with hostPaths `/media/public` (symlink) and `/media/data` writes
-  both, new files are `container_file_t`, `abi` owns `/home/public`, no AVCs.
-- **Firewall with k3s** (verified in QEMU): from an untrusted client (veth +
-  netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed;
-  pods keep cluster + external DNS, egress, the API server and metrics-server
-  → kubelet; k3s's own rules unchanged by start, reload and stop; no AVCs.
-  Right after boot Traefik's ports answer only once k3s has written its
-  rules (as without the firewall).
+- **TPM rollback lock is not on the real PC yet**: it runs an image from
+  before the lock, so `state` still unlocks for any db-signed UKI. After the
+  upgrade: `sudo labhf-enroll-tpm`, reboot, `sudo labhf-pcrlock status`.
+- **Rollback lock assumptions**: the initrd must measure nothing into PCR 4
+  before unlocking (`--location=749`, no os-separator in dracut's initrd); if
+  that changes, `labhf-pcrlock boot` fails `--strict` and logs it. A boot
+  entry without `version` on the ESP makes `bootc status` fail, and with it
+  `labhf-pcrlock` (the policy stays as it was, so the next upgrade asks for
+  the passphrase).
+- **Split root/state is not an upstream-tested layout.** Re-test after bootc
+  updates (see Verified).
+- **Coarse IOMMU isolation** on the real PC: 5 IOMMU groups (no ACS on the
+  board); the NVIDIA card shares one with its root port, the iGPU one with
+  USB and the crypto engine.
 - **k3s restarts once or twice at boot** when a NIC gets a SLAAC IPv6
   address after k3s has started: kube-proxy exits on a node IP change and
-  systemd restarts k3s (~20s). Pin the address in
-  `/etc/rancher/k3s/config.yaml` (`node-ip: <LAN IPv4>`) on a server.
-- **Chunked + sealed** (verified in QEMU): `bootc switch`/`upgrade` to the
-  chunkah image boots under Secure Boot (composefs digest computed after
-  chunking matches), TPM unlock, signed modules load.
-- **TPM rollback lock** (verified in QEMU): after `labhf-enroll-tpm` the
-  initrd unlocks with the pcrlock token (policy from the ESP credential);
-  `bootc upgrade` + reboot records the staged UKI at shutdown and unlocks
-  unattended, the next boot drops the deployment bootc removed; an older
-  db-signed UKI (a build this VM never booted) put on the ESP as a one-shot
-  entry stops at the passphrase prompt. The lock assumes the initrd measures
-  nothing into PCR 4 before unlocking (`--location=749`, no os-separator in
-  dracut's initrd); if that changes, `labhf-pcrlock boot` fails `--strict`
-  and logs it. A boot entry without `version` on the ESP makes `bootc status`
-  fail, and with it `labhf-pcrlock` (the policy then stays as it was, so the
-  next upgrade asks for the passphrase).
+  systemd restarts k3s (~20s). Seen in QEMU, not on the real PC's checked
+  boot (no `node-ip`, one global IPv6 address). Pin the address in
+  `/etc/rancher/k3s/config.yaml` (`node-ip: <LAN IPv4>`) if it shows up.
+- **`rd.emergency=reboot`** has not been triggered anywhere.
+- **Dashboard GPU**: the integrated GPU must stay enabled in the firmware
+  when the NVIDIA card is installed (often "iGPU multi-monitor" / "IGD"). See
+  [Dashboard settings](#dashboard-settings-etclabhfguienv).
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
   Fedora). Fallback: `webkitgtk6.0`/epiphany or chromium `--kiosk`.
-- **Dashboard GPU**: `labhf-gui` is tested in QEMU only (virtio fallback,
-  rotation). On the real PC check `journalctl -b -u gui.service | grep labhf-gui:`
-  says `amdgpu` and the HDMI output name matches `GUI_OUTPUT` (`wlr-randr`
-  lists outputs). The integrated GPU must stay enabled in the firmware when
-  the NVIDIA card is installed (often "iGPU multi-monitor" / "IGD").
-  See [Dashboard settings](#dashboard-settings-etclabhfguienv).
 - Sealed images are Tech Preview upstream; composefs has no boot counting /
   automatic rollback yet.
 - Kernel args are fixed in the signed UKI; change them in

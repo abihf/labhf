@@ -56,7 +56,7 @@ help:
 	@echo "make import-sbctl  or: use an existing sbctl key set (keys/sbctl-keys.tgz)"
 	@echo "make build       build the sealed image $(IMAGE)"
 	@echo "make vm-vars     OVMF vars with our keys enrolled"
-	@echo "make vm-install  install image to vm/disk.raw (LUKS root)"
+	@echo "make vm-install  install image to vm/disk.raw (sudo; LUKS state)"
 	@echo "make vm-run      boot it (swtpm, Secure Boot); ssh: make vm-ssh"
 	@echo "make registry push  serve the image to the VM at $(VM_REGISTRY)/labhf:latest"
 
