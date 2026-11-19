@@ -15,6 +15,7 @@ bootc status --format=json 2>/dev/null |
 command -v python3 >/dev/null && echo "python3 PRESENT" || echo "no python3"
 systemd-cryptenroll /dev/disk/by-partlabel/state | tr '\n' ' '; echo
 echo "TPM unlock this boot: $(journalctl -b -u systemd-cryptsetup@state --no-pager | grep -c 'TPM2 token unlocks')"
+labhf-pcrlock status 2>&1 | tr "\n" ";"; echo
 bootctl status 2>/dev/null | grep -E 'Secure Boot'; cat /sys/kernel/security/lockdown
 lsblk -o NAME,SIZE,PARTLABEL,MOUNTPOINTS "/dev/$(lsblk -dno PKNAME /dev/disk/by-partlabel/state)" | head -6
 

@@ -22,6 +22,7 @@ systemctl enable \
     smartd.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
+    labhf-pcrlock.service \
     sysroot-state.mount
 # nvidia-persistenced: started by udev when a GPU binds (70-labhf-nvidia.rules).
 # nvidia-powerd: Dynamic Boost (laptops, CPU<->GPU power sharing), enabled by

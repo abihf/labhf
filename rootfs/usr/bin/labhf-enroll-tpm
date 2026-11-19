@@ -1,16 +1,25 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Bind the LUKS state volume (/etc, /var) to the TPM with a literal PCR policy:
-#   0 firmware, 2 option ROMs, 3 option ROM config, 5 GPT/boot config,
-#   7 Secure Boot state + signing cert, 15 must still be zero (initrd only).
-# No PCR 4/11 => bootc upgrades (new UKI, same signing key) keep unlocking.
+# Bind the LUKS state volume (/etc, /var) to the TPM. Two policies, both must
+# hold:
+#   literal PCRs  0 firmware, 2 option ROMs, 3 option ROM config, 5 GPT/boot
+#                 config, 7 Secure Boot state + signing cert, 15 must still be
+#                 zero (initrd only)
+#   pcrlock       PCR 4 = systemd-boot + a UKI of a current bootc deployment
+#                 (rollback lock, kept up to date by labhf-pcrlock.service,
+#                 so bootc upgrades keep unlocking without re-enrolling)
+# Without pcrlock (LABHF_PCRLOCK=0) any UKI signed with the db key unlocks,
+# including old releases copied onto the ESP.
 #
 # usage: labhf-enroll-tpm
+# Run it on a boot you trust: it records the UKIs now on the ESP as yours.
 # The passphrase slot is kept on purpose: it is the only fallback (no recovery
 # key). Re-run after BIOS / GPU firmware / dbx updates (unlock with passphrase).
 set -euo pipefail
 
 PCRS=${LABHF_PCRS:-0+2+3+5+7}
+PCRLOCK=${LABHF_PCRLOCK:-1}
+POLICY=/var/lib/systemd/pcrlock.json
 ZERO=0000000000000000000000000000000000000000000000000000000000000000
 
 dev=$(cryptsetup status state 2>/dev/null | awk '$1=="device:"{print $2}')
@@ -27,11 +36,27 @@ fi
 pcr15=$(tpm2_pcrread sha256:15 2>/dev/null | awk '$1=="15:"{print $2}')
 echo "PCR15 now: ${pcr15:-?} (non-zero is expected: the state key was measured)"
 
+lock=()
+if [[ $PCRLOCK == 1 ]]; then
+    /usr/lib/systemd/systemd-pcrlock is-supported >/dev/null ||
+        { echo "TPM lacks what systemd-pcrlock needs; LABHF_PCRLOCK=0 enrolls without the rollback lock" >&2; exit 1; }
+    labhf-pcrlock enroll
+    lock=(--tpm2-pcrlock="$POLICY")
+elif [[ -f $POLICY ]]; then
+    /usr/lib/systemd/systemd-pcrlock remove-policy --policy="$POLICY"
+fi
+
 systemd-cryptenroll "$dev" \
     --wipe-slot=tpm2 \
     --tpm2-device=auto \
     --tpm2-public-key= \
+    "${lock[@]}" \
     --tpm2-pcrs="${PCRS}+15:sha256=${ZERO}"
 
+# start it now, so a `bootc upgrade` before the next reboot is recorded too
+if [[ $PCRLOCK == 1 ]]; then
+    systemctl restart labhf-pcrlock.service
+    labhf-pcrlock status
+fi
 systemd-cryptenroll "$dev"   # list key slots
 echo "OK. Reboot to test automatic unlock."

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# TPM rollback lock (see /usr/bin/labhf-pcrlock): at boot, drop UKIs of
+# deployments bootc no longer has; at shutdown, add the staged one. Stops
+# before bootc-finalize-staged.service and the ESP automount, so the staged
+# UKI (written by `bootc upgrade`) and /var are still there.
+[Unit]
+Description=labhf TPM rollback lock (pcrlock policy follows bootc deployments)
+Documentation=file:/usr/bin/labhf-pcrlock
+After=local-fs.target tpm2.target boot.automount bootc-finalize-staged.service
+RequiresMountsFor=/sysroot/state /var/lib
+ConditionPathExists=/var/lib/systemd/pcrlock.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# "-": the unit must stay active even if this fails, or ExecStop never runs
+ExecStart=-/usr/bin/labhf-pcrlock boot
+ExecStop=/usr/bin/labhf-pcrlock shutdown
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target

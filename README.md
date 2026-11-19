@@ -7,7 +7,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Atomic updates | bootc **composefs backend**, images pulled from an OCI registry, `bootc upgrade` / `rollback` |
 | Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
-| Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0 |
+| Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0, plus a [rollback lock](#tpm-rollback-lock) (systemd-pcrlock on PCR 4): only UKIs of current bootc deployments unlock, not older signed releases |
 | Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for k3s hostPaths |
 | Disk health | `smartd` (smartmontools, Fedora's default `DEVICESCAN` config) checks the disks it finds, without waking spun-down ones (`-n standby`), and logs to the journal; disks behind USB bridges may need an explicit `-d sat` line in `/etc/smartmontools/smartd.conf` |
 | Performance | CPU EPP `balance_performance` (amd-pstate, udev); `nvidia-persistenced` (started by udev when the driver binds a GPU), `nvidia-powerd` (laptop Dynamic Boost) off; md `stripe_cache_size` 4096 and `mq-deadline` for rotational disks; TCP BBR + `fq`; no `init_on_free`, lazy IOTLB flushing. Nothing pins clocks high |
@@ -31,7 +31,7 @@ build/                 scripts run inside build stages
 rootfs/                files copied into the image
   usr/lib/bootc/kargs.d/      kernel args → baked into the signed UKI
   usr/lib/labhf/repart.d/     disk layout for the installer
-  usr/bin/labhf-*             install-disk, enroll-tpm, setup-raid
+  usr/bin/labhf-*             install-disk, enroll-tpm, pcrlock, setup-raid
 scripts/               host scripts (keys, OVMF vars, QEMU, CI build)
 .github/workflows/     CI: build + push to ghcr.io
 keys/                  Secure Boot keys (git-ignored, back them up!)
@@ -66,7 +66,8 @@ cat /proc/cmdline            # composefs.digest=... (from the signed UKI)
 findmnt /                    # overlay ... verity=require
 bootctl status               # Secure Boot: enabled (user)
 findmnt /sysroot/state       # /dev/mapper/state (must be mounted!)
-labhf-enroll-tpm             # bind LUKS state to TPM (PCR 0,2,3,5,7 + 15=0)
+labhf-enroll-tpm             # bind LUKS state to TPM (PCR 0,2,3,5,7 + 15=0, pcrlock PCR 4)
+labhf-pcrlock status         # deployments vs. UKIs in the rollback lock
 reboot                       # should unlock without a prompt
 labhf-setup-raid create /dev/vdb /dev/vdc /dev/vdd   # RAID5 test (adopt: reuse one)
 ```
@@ -232,7 +233,9 @@ the booted system (bootc's `/sysroot` is a non-recursive clone, and
 
 From a live USB, without any key:
 - **ESP**: replace UKIs / systemd-boot with ones from a CI build, or pick the
-  previous deployment in the systemd-boot menu.
+  previous deployment in the systemd-boot menu. UKIs put on the ESP by hand
+  aren't in the [rollback lock](#tpm-rollback-lock): that boot asks for the
+  LUKS passphrase; rerun `labhf-enroll-tpm` once it is up.
 - **root**: inspect `/composefs`; image files can't be edited by hand
   (fs-verity + the digest in the UKI reject them), so you fix a bad image by
   booting the previous entry or deploying a new image.
@@ -244,7 +247,40 @@ Deploying a new image or fixing `/etc` needs `state` unlocked (LUKS passphrase):
 
 Push the image to a registry and point the machine at it (`TARGET_IMGREF=` at
 install, or `bootc switch <ref>` later). Then `bootc upgrade && reboot`; a new
-UKI signed by the same db key keeps PCR 7 stable, so TPM unlock keeps working.
+UKI signed by the same db key keeps PCR 7 stable, and `labhf-pcrlock.service`
+adds the staged UKI to the rollback lock at shutdown, so TPM unlock keeps
+working.
+
+### TPM rollback lock
+
+Secure Boot accepts every UKI ever signed with the db key, and root is plain,
+so PCR 7 alone would let someone with the disk pull an old, vulnerable
+release from the registry, copy its composefs objects and UKI onto root and
+ESP, and boot it with `state` unlocked. `labhf-enroll-tpm` therefore adds a
+[systemd-pcrlock](https://www.freedesktop.org/software/systemd/man/latest/systemd-pcrlock.html)
+policy on PCR 4 (the Authenticode hashes of systemd-boot and of the UKI that
+booted) to the LUKS token, next to the literal PCR policy; both must match.
+The policy lives in a TPM NV index, so it changes without re-enrolling:
+
+| When | `labhf-pcrlock` | Allowed UKIs |
+|---|---|---|
+| `labhf-enroll-tpm` | `enroll`: records systemd-boot and the booted, staged and rollback UKIs from the ESP | all current deployments |
+| shutdown (service stop) | `shutdown`: records the staged UKI that `bootc upgrade` wrote | + staged |
+| boot (service start) | `boot`: drops UKIs whose deployment bootc no longer has | booted + rollback |
+
+Records are taken only from the running system (the ESP is writable offline)
+and kept on the encrypted volume (`/var/lib/labhf/pcrlock.d`; the policy and
+the NV index's sealed PIN in `/var/lib/systemd/pcrlock.json`). The initrd gets
+the public part of the policy from `/boot/loader/credentials/pcrlock.*.cred`.
+A boot that unlocked with the passphrase is never recorded automatically:
+`labhf-pcrlock boot` logs a warning instead. `make-policy` runs with
+`--strict`: without it, a boot that matches no record drops PCR 4 and writes
+an empty policy that always unseals.
+
+`sudo labhf-pcrlock status` lists deployments vs. records. `bootc rollback`
+keeps unlocking (the rollback UKI stays recorded). A systemd-boot update on
+the ESP (`bootc upgrade` doesn't do one) needs `labhf-enroll-tpm` again.
+Without the lock: `sudo LABHF_PCRLOCK=0 labhf-enroll-tpm`.
 
 ### Update size: chunked layers
 
@@ -375,7 +411,9 @@ The checkout and podman-install actions are pinned by commit
 
 #### Where the db key is used
 
-An image signed with the db key unlocks the TPM-sealed `state` volume, so the
+An image signed with the db key unlocks the TPM-sealed `state` volume once a
+machine stages it (the [rollback lock](#tpm-rollback-lock) only keeps out
+images the machine never staged, not a bad new one), so the
 key is mounted only in `--network=none` build steps of stages built from the
 plain Fedora base, which run Fedora's tools and our scripts only:
 
@@ -517,7 +555,11 @@ existing install) belong in a git-ignored `MIGRATION.md`.
    labels at once but doesn't last: the next `restorecon` resets it.
 
 After a BIOS, GPU firmware or dbx update the TPM won't unlock: type the
-LUKS passphrase, then rerun `labhf-enroll-tpm`.
+LUKS passphrase, then rerun `labhf-enroll-tpm`. An unexpected passphrase
+prompt after an ordinary reboot, with `journalctl -b -u labhf-pcrlock`
+saying the booted UKI is not in the TPM policy, means a UKI that wasn't
+staged by this machine booted: rerun `labhf-enroll-tpm` only if you know why
+(e.g. `labhf-pcrlock.service` wasn't running when the upgrade was staged).
 
 ## Hardening
 
@@ -584,6 +626,17 @@ path was not triggered.
 - **Chunked + sealed** (verified in QEMU): `bootc switch`/`upgrade` to the
   chunkah image boots under Secure Boot (composefs digest computed after
   chunking matches), TPM unlock, signed modules load.
+- **TPM rollback lock** (verified in QEMU): after `labhf-enroll-tpm` the
+  initrd unlocks with the pcrlock token (policy from the ESP credential);
+  `bootc upgrade` + reboot records the staged UKI at shutdown and unlocks
+  unattended, the next boot drops the deployment bootc removed; an older
+  db-signed UKI (a build this VM never booted) put on the ESP as a one-shot
+  entry stops at the passphrase prompt. The lock assumes the initrd measures
+  nothing into PCR 4 before unlocking (`--location=749`, no os-separator in
+  dracut's initrd); if that changes, `labhf-pcrlock boot` fails `--strict`
+  and logs it. A boot entry without `version` on the ESP makes `bootc status`
+  fail, and with it `labhf-pcrlock` (the policy then stays as it was, so the
+  next upgrade asks for the passphrase).
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
 - **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
