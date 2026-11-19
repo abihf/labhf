@@ -3,7 +3,7 @@
 /keys
 # migration backups (symlink to a private directory)
 /backup
-# build output (installer UKI)
+# local build output
 /out
 vm/
 *.raw

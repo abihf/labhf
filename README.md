@@ -50,8 +50,6 @@ make tools        # helper container
 make keys         # once; keys/db.key is the crown jewel (or: make import-sbctl)
 make build        # -> localhost/labhf:latest
 make vm-install   # vm/disk.raw: ESP + root + LUKS state; asks LUKS + abi passwords (sudo)
-# or, without sudo, through the network installer (see "Network install"):
-#   make push && make installer INSTALLER_EXTRA="console=ttyS0,115200 labhf.vm-test=1" && make vm-netinstall
 make vm-run       # Secure Boot + swtpm; type the LUKS passphrase
 make vm-ssh       # ssh abi@localhost -p 2222
 ```
@@ -461,51 +459,6 @@ keys to `keys/replaced-<date>/`, and writes the usual `keys/` layout with
 `.auth` files that re-enroll exactly the current PK/KEK/db. Then update the
 CI secrets and rebuild. The machine itself no longer needs sbctl or the db
 key once it runs labhf: CI signs.
-
-## Network install
-
-`make installer` (after `make build`) writes `out/labhf-installer.efi`: one
-Secure Boot signed UKI (~95 MiB) whose initrd is a complete small system
-(Fedora minimal, systemd, networkd, podman; `Containerfile.installer`).
-Copied to the target's ESP and picked in the boot menu, it boots from RAM,
-brings up the network, pulls `labhf:latest` from a registry and runs the
-image's own `labhf-install-disk`, as from a live USB. Nothing on the target
-is touched before the disk prompt, and the pull is complete by then.
-
-| | |
-|---|---|
-| Settings | Kernel command line, signed, set at build time: `INSTALLER_REGISTRY` (`host:port`, plain HTTP), `INSTALLER_NET` (`dhcp` or `static:ADDR/PREFIX,GATEWAY[,DNS]`; a static address is also written into the installed system as `/etc/systemd/network/70-labhf-install.network`, for a LAN whose DHCP server is the machine being installed), `INSTALLER_TARGET` (where the installed system updates from, e.g. `ghcr.io/<owner>/labhf:latest`). abi's SSH key is baked in; passwords are typed at install time |
-| Registry | This PC: `make push`, then `make serve-install` (the registry read-only, so nobody on the LAN can push during the install; `make registry` makes it writable again). Plain HTTP is fine: a tampered image can't boot (signed UKI + composefs digest) |
-| USB disks | The installer has no `usb-storage`/`uas` drivers: USB disks (e.g. a data array) are invisible to it. USB NICs and keyboards work |
-| TPM | Signed with the same db key, so PCR 7 matches the installed system's policy. It extends PCR 15 at boot, which the policy requires to be zero: an installed disk can't be TPM-unlocked from the installer. No logins or shells either |
-| RAM | Image (~3G) and podman's temporary copies live in RAM (tmpfs up to 90%): 8G is enough |
-| Size | The build fails above 250 MiB (`INSTALLER_MAX_MB`): it has to fit in an existing ESP next to what is there |
-
-`make vm-netinstall` does the same in QEMU with an empty `vm/disk.raw`, the
-installer on a small FAT disk standing in for the target's ESP, and a USB
-stick the installer must not see; all rootless. It refuses to replace an
-installed `vm/disk.raw` unless `FORCE=1`. `labhf.vm-test=1` (VM builds only)
-gives abi passwordless sudo, for `scripts/vm-check.sh`:
-`ssh -p 2222 abi@localhost sudo bash -s < scripts/vm-check.sh`.
-
-Verified in QEMU: Secure Boot boot of the installer, PCR 15 extended, DHCP,
-pull, USB stick not listed, install, reboot into the installed system, and
-`vm-check.sh` all passing on it.
-
-**Netboot** (no ESP copy, no USB stick): the firmware loads the same signed
-UKI over the network (UEFI PXE via TFTP, or UEFI HTTP boot) and Secure Boot
-checks it as usual. `make netboot-serve OUT=... NETBOOT_IFACE=... NETBOOT_MACS=...
-NETBOOT_IP=... NETBOOT_GW=...` runs dnsmasq (DHCP + TFTP, in a throwaway
-root container: the one sudo step) plus a rootless HTTP server on port 8080.
-dnsmasq answers only the listed MACs, so it can run next to the LAN's normal
-DHCP server, or stand in for it when that server is the machine being
-installed. On the target, enable the firmware's network stack (UEFI PXE /
-HTTP boot) and pick the NIC in the boot menu; firmware usually netboots only
-from onboard NICs, not USB ones. `make vm-netboot` boots the VM from QEMU's
-built-in TFTP under Secure Boot (it keeps `vm/disk.raw`; the installer asks
-before touching a disk). When started from systemd-boot on the target disk
-instead, the installer ignores that disk's ESP (`systemd.gpt_auto=0`) and
-unmounts anything of the target before partitioning.
 
 ## Installing on the real PC
 
