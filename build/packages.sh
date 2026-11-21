@@ -50,7 +50,7 @@ dnf -y install \
     systemd-boot-unsigned \
     cryptsetup tpm2-tools tpm2-tss openssl sudo \
     fsverity-utils dosfstools e2fsprogs \
-    mdadm smartmontools \
+    mdadm smartmontools htop usbutils \
     systemd-networkd wireguard-tools kea \
     container-selinux k3s-selinux \
     audit \
