@@ -64,15 +64,38 @@ prune() {
     done
 }
 
+# systemd's components, optionally without 350-action-efi-application:
+# QEMU's firmware measures "Calling EFI Application from Boot Option" into
+# PCR 4, the real PC's (AMD) doesn't. Allowing both would double the values
+# (a TPM policy takes at most 8 per PCR), so the firmware's own event log
+# decides: make_policy retries without it only when the log lacks it.
+STOCK=/run/labhf-pcrlock.d
+ACTION=350-action-efi-application
+stock_components() {  # [skip-component]
+    local f
+    rm -rf "$STOCK"
+    mkdir -p "$STOCK"
+    for f in /usr/lib/pcrlock.d/*; do
+        [[ -n ${1:-} && ${f##*/} == "$1".pcrlock* ]] || ln -s "$f" "$STOCK/"
+    done
+}
+
 # PCR 4 only; the other PCRs stay a literal policy in the LUKS token.
 # --strict: without it, a boot that matches no record silently drops PCR 4
 # and writes an empty (always-unsealing) policy. --location=749: stop before
 # the os-separator (750), which this initrd doesn't measure before unlocking.
 make_policy() {
-    local out rc=0
-    out=$("$PL" make-policy --strict=yes --pcr=4 --location=749 \
-        --components=/usr/lib/pcrlock.d --components="$DIR" \
-        --policy="$POLICY" 2>&1) || rc=$?
+    local out rc=0 skip=
+    for skip in "" "$ACTION"; do
+        stock_components "$skip"
+        rc=0
+        out=$("$PL" make-policy --strict=yes --pcr=4 --location=749 \
+            --components="$STOCK" --components="$DIR" \
+            --policy="$POLICY" 2>&1) || rc=$?
+        # retry only if this firmware doesn't measure the action at all
+        (( rc != 0 )) && [[ -z $skip ]] &&
+            grep -qF "Couldn't find component '$ACTION' in event log" <<<"$out" || break
+    done
     # expected: records of PCRs outside the policy match nothing, and
     # components after this boot's current point aren't in the log yet
     grep -vE "^Event log record [0-9]+ \(PCR ([0-35-9]|1[0-9]|2[0-3]),|^Didn't find component|^Skipped [0-9]+ components" \

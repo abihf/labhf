@@ -565,7 +565,12 @@ Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
   upgrade: `sudo labhf-enroll-tpm`, reboot, `sudo labhf-pcrlock status`.
 - **Rollback lock assumptions**: the initrd must measure nothing into PCR 4
   before unlocking (`--location=749`, no os-separator in dracut's initrd); if
-  that changes, `labhf-pcrlock boot` fails `--strict` and logs it. A boot
+  that changes, `labhf-pcrlock boot` fails `--strict` and logs it. systemd's
+  `350-action-efi-application` is left out only when this boot's event log
+  lacks it: QEMU's firmware measures it, the real PC's doesn't (its PCR 4 is
+  the separator, `BOOTX64.EFI` and the UKI). Allowing both would double the
+  values, and a TPM policy takes at most 8 per PCR (deployments × variants).
+  Other firmware may measure more and need its own record. A boot
   entry without `version` on the ESP makes `bootc status` fail, and with it
   `labhf-pcrlock` (the policy stays as it was, so the next upgrade asks for
   the passphrase).
