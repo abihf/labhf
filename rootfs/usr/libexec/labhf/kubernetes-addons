@@ -1,0 +1,29 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+state=/var/lib/labhf-kubernetes
+export KUBECONFIG=$state/credentials/admin.conf
+super_admin=$state/credentials/super-admin.conf
+
+admin=$KUBECONFIG
+[[ -f $state/addons-installed ]] || admin=$super_admin
+until kubectl --kubeconfig "$admin" --request-timeout=5s get --raw /readyz >/dev/null; do
+    sleep 3
+done
+if [[ ! -f $state/addons-installed ]]; then
+    kubectl create clusterrolebinding kubeadm:cluster-admins \
+        --clusterrole=cluster-admin --group=kubeadm:cluster-admins --dry-run=client -o yaml |
+        kubectl --kubeconfig "$super_admin" apply -f -
+
+    kubectl create clusterrolebinding labhf:kubelet-client-rotation \
+        --clusterrole=system:certificates.k8s.io:certificatesigningrequests:selfnodeclient \
+        --group=system:nodes --dry-run=client -o yaml | kubectl apply -f -
+    kubeadm init phase addon coredns --config /run/labhf-kubernetes/kubeadm.yaml --kubeconfig "$KUBECONFIG"
+    kubectl apply -f /usr/share/labhf/kubernetes/nvidia.yaml
+    touch "$state/addons-installed"
+fi
+kubectl create clusterrolebinding labhf:apiserver-kubelet \
+    --clusterrole=system:kubelet-api-admin --user=kube-apiserver-kubelet-client \
+    --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f /usr/share/labhf/kubernetes/kube-router-rbac.yaml

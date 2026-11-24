@@ -1,0 +1,15 @@
+[Unit]
+Description=Kine SQLite datastore for Kubernetes
+Requires=labhf-kubernetes-prepare.service
+After=labhf-kubernetes-prepare.service
+PartOf=labhf-kubernetes.target
+
+[Service]
+Type=exec
+UMask=0077
+RuntimeDirectory=labhf-kine
+RuntimeDirectoryMode=0700
+WorkingDirectory=/var/lib/labhf-kubernetes
+ExecStart=/usr/bin/kine --listen-address=unix:///run/labhf-kine/kine.sock --metrics-bind-address=0
+Restart=on-failure
+RestartSec=5s

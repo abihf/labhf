@@ -1,0 +1,78 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+umask 077
+
+state=/var/lib/labhf-kubernetes
+credentials=$state/credentials
+runtime=/run/labhf-kubernetes
+config=/etc/kubernetes/labhf-kubeadm.yaml
+
+if systemctl is-active --quiet k3s.service; then
+    echo 'Stop k3s before starting the replacement cluster.' >&2
+    exit 1
+fi
+if [[ -d /var/lib/rancher/k3s/server && ! -f /etc/kubernetes/labhf-cutover ]]; then
+    echo 'Existing k3s state found. Back up k3s and follow the README cutover before starting Kubernetes.' >&2
+    exit 1
+fi
+
+if [[ -e $state/addons-installed && ! -s $state/db/state.db ]]; then
+    echo 'The Kubernetes SQLite database is missing. Restore the cluster state before starting Kubernetes.' >&2
+    exit 1
+fi
+
+address=${LABHF_KUBE_ADDRESS:-$(ip -4 route get 1.1.1.1 2>/dev/null | awk '
+    NR == 1 { for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1) }
+' || true)}
+if [[ -z $address ]] || ! ip -o -4 addr show scope global |
+        awk -v wanted="$address" '{ split($4, a, "/"); if (a[1] == wanted) found = 1 } END { exit !found }'; then
+    echo 'Set LABHF_KUBE_ADDRESS in /etc/kubernetes/labhf.env to a local IPv4 address.' >&2
+    exit 1
+fi
+printf 'LABHF_KUBE_ADDRESS=%s\n' "$address" > "$runtime/node.env"
+sed "s|^  advertiseAddress: .*|  advertiseAddress: $address|" "$config" > "$runtime/kubeadm.yaml"
+
+install -d -m 0700 "$state/logs" /var/lib/kubelet
+restorecon /var/lib/kubelet
+
+if [[ ! -d $credentials ]]; then
+    # Publish the PKI, kubeconfigs and encryption key together after generation.
+    work=$(mktemp -d "$state/.bootstrap.XXXXXXXX")
+    trap 'rm -rf -- "$work"' EXIT
+    sed "s|^certificatesDir: .*|certificatesDir: $work/pki|" \
+        "$runtime/kubeadm.yaml" > "$work/kubeadm.yaml"
+    for cert in ca apiserver apiserver-kubelet-client front-proxy-ca front-proxy-client sa; do
+        kubeadm init phase certs "$cert" --config "$work/kubeadm.yaml"
+    done
+    kubeadm init phase kubeconfig all --config "$work/kubeadm.yaml" --kubeconfig-dir "$work"
+    kubeadm kubeconfig user --config "$work/kubeadm.yaml" --client-name system:kube-proxy > "$work/proxy.conf"
+
+    key=$(openssl rand -base64 32)
+    cat > "$work/encryption.yaml" <<YAML
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources: [secrets]
+    providers:
+      - aescbc:
+          keys:
+            - name: labhf
+              secret: $key
+      - identity: {}
+YAML
+    rm -- "$work/kubeadm.yaml"
+    mv -T -- "$work" "$credentials"
+fi
+
+# Keep the kubelet's bootstrap copy and rotated client certs in its SELinux
+# managed directory. Copying the kubeconfig again would undo its rotation.
+if [[ ! -f /var/lib/kubelet/labhf-kubelet.conf ]]; then
+    install -m 0600 "$credentials/kubelet.conf" /var/lib/kubelet/labhf-kubelet.conf
+fi
+install -m 0644 "$credentials/pki/ca.crt" /var/lib/kubelet/labhf-ca.crt
+restorecon /var/lib/kubelet/labhf-{kubelet.conf,ca.crt}
+
+# Issue a policy-controller client certificate on each boot with the cluster CA.
+kubeadm kubeconfig user --config "$runtime/kubeadm.yaml" \
+    --client-name labhf:kube-router > "$runtime/kube-router.conf"

@@ -37,12 +37,14 @@ COPY --from=sdboot-sign /out/ /usr/lib/systemd/boot/efi/
 
 FROM signer AS sealer
 ARG SB_CERT_SHA256
+# bootc builds a temporary composefs object store under /var/tmp.
 RUN --network=none \
     --mount=type=bind,from=signed,target=/target \
     --mount=type=bind,source=build,target=/ctx/build \
     --mount=type=secret,id=sb_key \
     --mount=type=secret,id=sb_cert \
     --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/var/tmp \
     test "$(sha256sum < /run/secrets/sb_cert | cut -c1-64)" = "$SB_CERT_SHA256" && \
     /ctx/build/seal-uki.sh
 
@@ -50,7 +52,7 @@ FROM signed
 COPY --from=sealer /out/boot /boot
 LABEL containers.bootc=1
 LABEL org.opencontainers.image.title="labhf"
-LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: k3s, NVIDIA, mdadm, cage+WPE kiosk"
+LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: Kubernetes, NVIDIA, mdadm, cage+WPE kiosk"
 ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

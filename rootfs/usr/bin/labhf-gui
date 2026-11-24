@@ -3,7 +3,7 @@
 # Kiosk session for gui.service: pick the display GPU, then cage + MiniBrowser.
 #
 # The PC has two GPUs: the integrated AMD (drives the screen) and the NVIDIA
-# (compute for k3s). cardN/renderDN numbers depend on driver load order, so the
+# (compute for Kubernetes). cardN/renderDN numbers depend on driver load order, so the
 # GPU is chosen by kernel driver name and pinned for wlroots, Mesa and WebKit.
 #
 # Settings (machine-local, /etc/labhf/gui.env, read by gui.service):

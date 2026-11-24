@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Checks for an installed labhf VM, run inside it as root:
 #   ssh -p 2222 abi@localhost sudo bash -s < scripts/vm-check.sh
-# Read-mostly. Temporarily creates a network namespace (fake LAN client), a
-# test pod and a k8s secret, and starts gui.service without enabling it; all
-# are removed again. Prints results; it does not judge them all.
+# Creates a fake LAN client, test pods, a NodePort, NetworkPolicies and a Secret, and starts
+# gui.service temporarily. Prints results and fails on a cluster check.
 set -uo pipefail
 sec() { printf '\n== %s\n' "$*"; }
 
@@ -49,51 +48,144 @@ find /usr -xdev -type f -perm /6000 | tr '\n' ' '; echo
 ls /etc/sudoers.d/ | tr '\n' ' '; echo
 findmnt -no OPTIONS /var/home | cut -c1-40
 
-sec "k3s"
-for i in $(seq 1 60); do kubectl get --raw /readyz >/dev/null 2>&1 && break; sleep 3; done
-kubectl wait --for=condition=Ready node --all --timeout=180s
-k3s secrets-encrypt status 2>&1 | head -1
-ls /var/lib/rancher/k3s/server/logs/audit.log
-# a fresh cluster creates Traefik's pods a few minutes in: wait for them to exist
-for i in $(seq 1 60); do
-    [[ -n $(kubectl -n kube-system get pod -l app.kubernetes.io/name=traefik -o name 2>/dev/null) ]] && break; sleep 5
-done
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=traefik -n kube-system --timeout=240s >/dev/null && echo traefik-ready
-kubectl wait --for=condition=Ready pod -l svccontroller.k3s.cattle.io/svcname=traefik -n kube-system --timeout=120s >/dev/null && echo svclb-ready
-sleep 10
+sec "Kubernetes, CRI-O and SQLite"
+(
+    set -e
+    state=/var/lib/labhf-kubernetes
+    export KUBECONFIG=$state/credentials/admin.conf
+    cleanup() {
+        local status=$?
+        if (( status != 0 )); then
+            kubectl logs labhf-check --tail=20 || true
+        fi
+        ip netns del labhf-check 2>/dev/null || true
+        ip link del labhf-check 2>/dev/null || true
+        kubectl delete service,secret,networkpolicy labhf-check --ignore-not-found >/dev/null || status=1
+        kubectl delete pod labhf-check labhf-check-client --grace-period=1 \
+            --ignore-not-found --timeout=75s >/dev/null || status=1
+        rm -f /home/public/labhf-check || status=1
+        exit "$status"
+    }
+    trap cleanup EXIT
+    for unit in labhf-kubernetes.target labhf-kine crio kubelet labhf-kube-router; do
+        systemctl is-active "$unit"
+    done
+    kubectl get --raw /readyz
+    kubectl wait --for=condition=Ready node --all --timeout=180s
+    kubectl -n kube-system rollout status deployment/coredns --timeout=240s
+    test -s "$state/db/state.db"
+    test -f "$state/logs/audit.log"
+    crio_config=$(crio status config)
+    grep -F 'root = "/var/lib/crio/overlay-storage"' <<< "$crio_config" >/dev/null
+    grep -F 'overlay.use_composefs=false' <<< "$crio_config" >/dev/null
+    test -d /var/lib/crio/overlay-storage/overlay
+    test -z "$(find /var/lib/crio/overlay-storage/overlay -name composefs.blob -print -quit)"
 
-sec "firewall (fake LAN client in a netns)"
-probe() { ip netns exec lan timeout 3 bash -c "echo > /dev/tcp/$1/$2" 2>/dev/null && echo open || echo closed; }
-ip netns del lan 2>/dev/null; ip link del lanv 2>/dev/null
-ip netns add lan; ip link add lanv type veth peer name lanp; ip link set lanp netns lan
-ip addr add 192.0.2.1/24 dev lanv; ip link set lanv up
-ip netns exec lan ip addr add 192.0.2.2/24 dev lanp; ip netns exec lan ip link set lanp up
-ip netns exec lan ip route add default via 192.0.2.1; sleep 1
-tp=$(kubectl -n kube-system get pod -l app.kubernetes.io/name=traefik -o jsonpath='{.items[0].status.podIP}')
-for p in 22 6443 10250 80 443; do printf 'host:%s %s  ' "$p" "$(probe 192.0.2.1 "$p")"; done; echo
-echo "pod $tp:8000 $(probe "$tp" 8000)  svc 10.43.0.10:53 $(probe 10.43.0.10 53)"
-ok=0; for i in $(seq 1 40); do ip netns exec lan timeout 1 bash -c "echo > /dev/tcp/192.0.2.1/22" 2>/dev/null && ok=$((ok+1)); done
-echo "ssh rate limit: $ok of 40 new connections accepted"
-ip netns del lan; ip link del lanv 2>/dev/null
+    sec "Pod DNS, API, egress and hostPath"
+    kubectl run labhf-check --image=docker.io/library/busybox:1.37 --restart=Never \
+        --overrides='{"spec":{"volumes":[{"name":"data","hostPath":{"path":"/media/public"}}],"containers":[{"name":"labhf-check","image":"docker.io/library/busybox:1.37","volumeMounts":[{"name":"data","mountPath":"/public"}],"readinessProbe":{"httpGet":{"path":"/","port":8080}},"command":["sh","-ec","date > /public/labhf-check; nslookup kubernetes.default.svc.cluster.local; out=$(wget --no-check-certificate -qO- -T5 https://kubernetes.default.svc 2>&1 || true); case $out in *HTTP/*) ;; *) echo \"$out\" >&2; exit 1;; esac; wget -qO- -T5 http://example.com >/dev/null; mkdir -p /tmp/www; echo ok >/tmp/www/index.html; exec httpd -f -p 8080 -h /tmp/www"]}]}}'
+    kubectl wait --for=condition=Ready pod/labhf-check --timeout=180s
+    kubectl logs labhf-check
+    test -s /home/public/labhf-check
+    kubectl expose pod labhf-check --name=labhf-check --type=NodePort --port=8080
+    node_port=$(kubectl get service labhf-check -o jsonpath='{.spec.ports[0].nodePort}')
+    pod_ip=$(kubectl get pod labhf-check -o jsonpath='{.status.podIP}')
+    service_ip=$(kubectl get service labhf-check -o jsonpath='{.spec.clusterIP}')
 
-sec "pods"
-kubectl delete pod labhf-check --ignore-not-found --wait >/dev/null 2>&1
-kubectl run labhf-check --restart=Never --image=docker.io/library/busybox:1.37 \
-  --overrides='{"spec":{"volumes":[{"name":"p","hostPath":{"path":"/media/public"}}],"containers":[{"name":"labhf-check","image":"docker.io/library/busybox:1.37","volumeMounts":[{"name":"p","mountPath":"/public"}],"command":["sh","-c","date > /public/labhf-check && echo public-write-ok; nslookup kubernetes.default.svc.cluster.local >/dev/null && echo cluster-dns-ok; wget -qO- -T5 http://example.com >/dev/null && echo egress-ok; o=$(wget -qO- -T5 http://kubernetes.default.svc:443/ 2>&1); case $o in *HTTP/*) echo api-ok;; *) echo api-FAIL;; esac; true"]}]}}' >/dev/null 2>&1
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/labhf-check --timeout=180s >/dev/null && kubectl logs labhf-check
-kubectl delete pod labhf-check --wait=false >/dev/null; rm -f /home/public/labhf-check
-kubectl create secret generic labhf-check --from-literal=k=LABHFCHECKVALUE >/dev/null
-echo "secret in plaintext in the db: $(strings /var/lib/rancher/k3s/server/db/state.db 2>/dev/null | grep -c LABHFCHECKVALUE)"
-kubectl delete secret labhf-check >/dev/null
+    sec "Firewall from a fake LAN client"
+    probe() { ip netns exec labhf-check timeout 3 bash -c 'echo > "/dev/tcp/$1/$2"' bash "$1" "$2" 2>/dev/null; }
+    ip netns add labhf-check
+    ip link add labhf-check type veth peer name lanp
+    ip link set lanp netns labhf-check
+    ip addr add 192.0.2.1/24 dev labhf-check
+    ip link set labhf-check up
+    ip -n labhf-check addr add 192.0.2.2/24 dev lanp
+    ip -n labhf-check link set lanp up
+    ip -n labhf-check route add default via 192.0.2.1
+    probe 192.0.2.1 22 || { echo 'Expected LAN access to SSH' >&2; exit 1; }
+    for _ in {1..30}; do
+        probe 192.0.2.1 "$node_port" && break
+        sleep 2
+    done
+    probe 192.0.2.1 "$node_port" || { echo "Expected LAN access to NodePort $node_port" >&2; exit 1; }
+    for endpoint in "192.0.2.1:6443" "192.0.2.1:10250" "$pod_ip:8080" "$service_ip:8080"; do
+        if probe "${endpoint%:*}" "${endpoint##*:}"; then
+            echo "Unexpected LAN access to $endpoint" >&2
+            exit 1
+        fi
+    done
+
+    sec "NetworkPolicy ingress and egress"
+    kubectl run labhf-check-client --image=docker.io/library/busybox:1.37 \
+        --restart=Never --command -- sleep 600
+    kubectl wait --for=condition=Ready pod/labhf-check-client --timeout=180s
+    wait_policy() {
+        local expected=$1 result
+        for _ in {1..12}; do
+            result=$(kubectl --request-timeout=8s exec labhf-check-client -- sh -c '
+                if wget -q -O /dev/null -T 2 "$1"; then echo allowed; else echo blocked; fi
+            ' sh "http://$pod_ip:8080/") || return 1
+            [[ $result == "$expected" ]] && return 0
+            sleep 2
+        done
+        echo "Expected traffic to be $expected, last result: $result" >&2
+        return 1
+    }
+    wait_policy allowed
+    kubectl apply -f - <<'YAML'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: labhf-check
+spec:
+  podSelector:
+    matchLabels:
+      run: labhf-check
+  policyTypes: [Ingress]
+  ingress: []
+YAML
+    wait_policy blocked
+    kubectl delete networkpolicy labhf-check
+    wait_policy allowed
+    kubectl apply -f - <<'YAML'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: labhf-check
+spec:
+  podSelector:
+    matchLabels:
+      run: labhf-check-client
+  policyTypes: [Egress]
+  egress: []
+YAML
+    wait_policy blocked
+    kubectl delete networkpolicy labhf-check
+    wait_policy allowed
+
+    sec "Secret encryption"
+    kubectl create secret generic labhf-check --from-literal=value=LABHFCHECKVALUE
+    db=( "$state/db/state.db" )
+    [[ ! -f $state/db/state.db-wal ]] || db+=( "$state/db/state.db-wal" )
+    if grep -aFq LABHFCHECKVALUE "${db[@]}"; then
+        echo 'Kubernetes Secret is visible in SQLite' >&2
+        exit 1
+    fi
+    grep -aF 'k8s:enc:aescbc:v1:labhf:' "${db[@]}" >/dev/null
+)
+cluster_status=$?
+(( cluster_status == 0 )) || exit "$cluster_status"
 
 sec "kiosk (started, not enabled)"
+gui_was_active=0
+if systemctl is-active --quiet gui; then gui_was_active=1; fi
 systemctl is-enabled gui; systemctl start gui
 for i in $(seq 1 15); do pgrep -x WPEWebProcess >/dev/null && break; sleep 2; done; sleep 5
 echo "gui: $(systemctl is-active gui), restarts $(systemctl show gui -p NRestarts --value)"
 for p in $(pgrep -x WPEWebProcess) $(pgrep -x cage); do
     echo "  $(cat /proc/$p/comm): $(grep -oE 'libgallium[^ ]*' /proc/$p/maps | sort -u) NoNewPrivs=$(awk '/NoNewPrivs/{print $2}' /proc/$p/status)"
 done
-systemctl stop gui
+if (( ! gui_was_active )); then systemctl stop gui; fi
 
 sec "SELinux denials this boot"
 ausearch --input-logs -m avc -ts boot 2>&1 | grep -c 'avc:' || true

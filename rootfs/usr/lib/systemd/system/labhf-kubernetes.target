@@ -1,0 +1,7 @@
+[Unit]
+Description=Lab Kubernetes
+Requires=labhf-kubernetes-prepare.service labhf-kubernetes-addons.service
+Wants=kube-controller-manager.service kube-scheduler.service kube-proxy.service kubelet.service labhf-kube-router.service
+
+[Install]
+WantedBy=multi-user.target

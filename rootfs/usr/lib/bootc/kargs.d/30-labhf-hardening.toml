@@ -1,5 +1,5 @@
 # Memory hardening: zero pages on allocation (init_on_alloc); not also on free
-# (init_on_free zeroes every freed page: a few % on k3s/containerd for little
+# (init_on_free zeroes every freed page: a few % on Kubernetes/CRI-O for little
 # extra, since init_on_alloc already keeps old data out of new allocations).
 # DMA: IOMMU forced on, every device isolated, no identity mapping, PCI bus
 # mastering blocked before the kernel's IOMMU setup. IOTLB flushes are lazy

@@ -27,16 +27,6 @@ dnf -y install \
 # Containerfile (packages stage)
 ls /etc/yum.repos.d/philn-wpewebkit.repo /etc/yum.repos.d/nvidia-container-toolkit.repo
 
-cat > /etc/yum.repos.d/rancher-k3s-common.repo <<'EOF'
-[rancher-k3s-common-stable]
-name=Rancher K3s Common (stable)
-baseurl=https://rpm.rancher.io/k3s/stable/common/coreos/noarch
-enabled=1
-gpgcheck=1
-repo_gpgcheck=0
-gpgkey=https://rpm.rancher.io/public.key
-EOF
-
 # --- boot chain: systemd-boot instead of grub/bootupd ------------------------
 rpm -e bootupd || true
 rm -rf /usr/lib/bootupd /usr/lib/ostree-boot
@@ -45,6 +35,9 @@ dnf -y remove rpm-ostree || true
 
 # --- packages ----------------------------------------------------------------
 nvidia_evr=$(cat /ctx/nvidia/nvidia-version)
+kubernetes_pkgs=(kubernetes1.37 kubernetes1.37-client kubernetes1.37-systemd
+                 kubernetes1.37-kubeadm cri-o1.37 cri-tools1.37
+                 containernetworking-plugins ipset)
 
 dnf -y install \
     systemd-boot-unsigned \
@@ -52,7 +45,7 @@ dnf -y install \
     fsverity-utils dosfstools e2fsprogs \
     mdadm smartmontools htop usbutils \
     systemd-networkd wireguard-tools kea \
-    container-selinux k3s-selinux \
+    container-selinux "${kubernetes_pkgs[@]}" \
     audit \
     cage wlr-randr wpewebkit \
     mesa-dri-drivers \
@@ -70,7 +63,7 @@ signer=$(cat /ctx/nvidia/signer)
 n=0
 for f in $(rpm -ql "kmod-nvidia-${kver}" | grep -E '\.ko(\.xz|\.zst)?$'); do
     install -v -m 0644 "/ctx/nvidia/modules/${f#/}" "$f"
-    # fixed mtime, so unchanged modules keep their layer (see k3s.sh)
+    # fixed mtime, so unchanged modules keep their layer
     touch -d @0 "$f"
     [[ $(modinfo -F signer "$f") == "$signer" ]] || { echo "unsigned module: $f" >&2; exit 1; }
     n=$((n + 1))
@@ -79,7 +72,7 @@ done
 depmod -a "$kver"
 
 # systemd-networkd replaces NetworkManager: it only touches links a .network
-# file matches (k3s's cni0/flannel/veth stay alone), and wg0 is a plain .netdev
+# file matches (pod bridge/veth stay alone), and wg0 is a plain .netdev
 dnf -y remove 'NetworkManager*'
 if rpm -qa | grep '^NetworkManager'; then echo 'NetworkManager still installed' >&2; exit 1; fi
 rpm -q systemd-networkd systemd-resolved bootc
@@ -154,7 +147,7 @@ done
 keep=(kernel-core bootc skopeo podman wpewebkit cage mesa-dri-drivers llvm-libs
       linux-firmware amd-gpu-firmware amd-ucode-firmware realtek-firmware
       xorg-x11-drv-nvidia xorg-x11-drv-nvidia-cuda-libs nvidia-container-toolkit
-      container-selinux k3s-selinux systemd-networkd kmscon fuse3)
+      container-selinux "${kubernetes_pkgs[@]}" systemd-networkd kmscon fuse3)
 rpm -q "${keep[@]}"
 if rpm -qa 'qemu-user-static*' python3-botocore nvidia-gpu-firmware localsearch \
         pipewire nvidia-settings python3 policycoreutils-python-utils \

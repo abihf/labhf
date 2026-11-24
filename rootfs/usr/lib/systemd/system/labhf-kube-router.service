@@ -1,0 +1,17 @@
+[Unit]
+Description=kube-router NetworkPolicy controller
+Requires=labhf-kubernetes-addons.service
+After=labhf-kubernetes-addons.service kubelet.service
+PartOf=labhf-kubernetes.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/kube-router \
+    --kubeconfig=/run/labhf-kubernetes/kube-router.conf \
+    --run-firewall=true \
+    --run-router=false --run-service-proxy=false --run-loadbalancer=false \
+    --enable-cni=false \
+    --service-cluster-ip-range=10.43.0.0/16 \
+    --health-addr=127.0.0.1
+Restart=always
+RestartSec=5s

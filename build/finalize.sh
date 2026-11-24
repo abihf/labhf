@@ -5,11 +5,23 @@ set -euxo pipefail
 
 kver=$(ls /usr/lib/modules)
 
-# k3s (k3s stage): the SELinux type the policy assigns (should be k3s_exec_t or similar)
-/usr/bin/k3s --version
-matchpathcon /usr/bin/k3s || true
+kube-apiserver --version
+kubelet --version
+crio --version
+CONTAINERS_STORAGE_CONF=/etc/crio/labhf-storage.conf crio config |
+    grep -F 'overlay.use_composefs=false'
+kine --version
+for plugin in bridge host-local loopback portmap; do
+    test -x "/usr/libexec/cni/$plugin"
+done
+# Verify kubeadm can load the config without contacting a running cluster.
+kubeadm config validate --config /etc/kubernetes/labhf-kubeadm.yaml
 
 # --- units -------------------------------------------------------------------
+# Let the target order Kubernetes and gate startup on the cutover and RAID.
+systemctl disable crio.service kubelet.service kube-apiserver.service \
+    kube-controller-manager.service kube-scheduler.service kube-proxy.service \
+    crio-wipe.service
 systemctl enable \
     sshd.service \
     systemd-networkd.service \
@@ -17,10 +29,9 @@ systemctl enable \
     labhf-firewall.service \
     var-home.mount \
     auditd.service \
-    k3s.service \
+    labhf-kubernetes.target \
     home-dashboard.service \
     smartd.service \
-    labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
     labhf-pcrlock.service \
     sysroot-state.mount
@@ -32,8 +43,8 @@ systemctl set-default multi-user.target
 # gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
 # must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.
 # DNS from networkd (DNS= / DHCP), via resolved's uplink file: programs that
-# read resolv.conf (dig, containerd, k3s, Go binaries) ask the network's DNS
-# servers directly. Not the stub (127.0.0.53): a k3s LoadBalancer or hostPort
+# read resolv.conf (dig, CRI-O, Kubernetes, Go binaries) ask the network's DNS
+# servers directly. Not the stub (127.0.0.53): a Kubernetes hostPort
 # on 53 (a DNS server in the cluster) DNATs every local address's port 53,
 # 127.0.0.53/54 included, to its pod; while that pod is down, the host has no
 # DNS and can't even pull the pod's image. glibc lookups still go through
@@ -92,7 +103,7 @@ mkdir -p /media/data /media/backup
 # /media/public: fast shared data, on the encrypted state volume
 ln -s /home/public /media/public
 
-# pods (k3s hostPath) may read/write /home/public; the policy maps /home to
+# pods (Kubernetes hostPath) may read/write /home/public; the policy maps /home to
 # /var/home, so one rule covers both. It has to be a local rule: those come
 # after the home directory rules (/var/home/[^/]+ -> user_home_dir_t), which a
 # policy module's filecon can't override. No Python, so no semanage: write the

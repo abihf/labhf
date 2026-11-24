@@ -1,0 +1,11 @@
+[Unit]
+Description=Configure the lab Kubernetes add-ons and controller permissions
+Requires=kube-apiserver.service
+After=kube-apiserver.service
+PartOf=labhf-kubernetes.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=5min
+ExecStart=/usr/libexec/labhf/kubernetes-addons

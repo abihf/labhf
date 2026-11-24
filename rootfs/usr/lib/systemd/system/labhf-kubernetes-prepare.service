@@ -1,0 +1,17 @@
+[Unit]
+Description=Prepare the local Kubernetes control plane
+Wants=network-online.target
+Requires=labhf-firewall.service
+After=network-online.target labhf-firewall.service
+RequiresMountsFor=/media/data /var/lib/labhf-kubernetes
+PartOf=labhf-kubernetes.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=labhf-kubernetes
+StateDirectoryMode=0700
+RuntimeDirectory=labhf-kubernetes
+RuntimeDirectoryMode=0700
+EnvironmentFile=-/etc/kubernetes/labhf.env
+ExecStart=/usr/libexec/labhf/kubernetes-prepare

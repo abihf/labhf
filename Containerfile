@@ -10,7 +10,7 @@
 #   base            upstream Fedora bootc image
 #   nvidia-build    builds the NVIDIA open kernel module, unsigned (only compile step)
 #   nvidia-sign     signs its .ko files
-#   k3s, home-dashboard   one per downloaded app (ADD --checksum), files in /out
+#   kine, kube-router, home-dashboard   one per downloaded app (ADD --checksum), files in /out
 #   packages        all dnf work
 #   rootfs          packages + apps, config overlay, initramfs (the last stage here)
 # then, in `make build` (none of it in the CI layer cache):
@@ -25,7 +25,7 @@
 # The db key (build secret sb_key) is mounted ONLY in --network=none steps of
 # stages built from the clean Fedora base: nvidia-sign here, sdboot-sign and
 # sealer in Containerfile.seal.
-# Steps that run third-party code (RPM Fusion, COPR, NVIDIA, k3s, dracut
+# Steps that run third-party code (RPM Fusion, COPR, NVIDIA, Kine, kube-router, dracut
 # modules of installed packages) never see it, so they can neither send it
 # anywhere nor hide it in the image.
 #
@@ -74,18 +74,35 @@ RUN --network=none \
 # SOURCE_DATE_EPOCH (the newest package build time), which would put the same
 # binary in a new layer whenever any package changes.
 
-# k3s: upstream static binary
-FROM scratch AS k3s-src
-ARG K3S_VERSION=v1.37.2+k3s1
-ARG K3S_SHA256=265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
-ADD --link --checksum=sha256:${K3S_SHA256} \
-    https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}/k3s /k3s
+# Kine exposes the etcd v3 storage API over a local socket backed by SQLite.
+FROM scratch AS kine-src
+ARG KINE_VERSION=v0.17.1
+ARG KINE_SHA256=5d67d481774822153a1c9f635e4ca78efdc77108b4288c0b5867a4cbb042a0d0
+ADD --link --checksum=sha256:${KINE_SHA256} \
+    https://github.com/k3s-io/kine/releases/download/${KINE_VERSION}/kine-amd64-nocgo /kine
 
-FROM base AS k3s
+FROM base AS kine
 RUN --network=none \
-    --mount=type=bind,source=build/k3s.sh,target=/ctx/k3s.sh \
-    --mount=type=bind,from=k3s-src,target=/in \
-    bash /ctx/k3s.sh
+    --mount=type=bind,from=kine-src,target=/in \
+    install -D -m 0755 /in/kine /out/usr/bin/kine && \
+    touch -d @0 /out/usr/bin/kine && /out/usr/bin/kine --version
+
+# kube-router enforces NetworkPolicy using the host's iptables and ipset.
+FROM scratch AS kube-router-src
+ARG KUBE_ROUTER_VERSION=2.12.0
+ARG KUBE_ROUTER_SHA256=3d7e2f741f28b75ecae4dc1f7761a6f62fb908664ec06bfb6bde743d933a700e
+ADD --link --checksum=sha256:${KUBE_ROUTER_SHA256} \
+    https://github.com/cloudnativelabs/kube-router/releases/download/v${KUBE_ROUTER_VERSION}/kube-router_${KUBE_ROUTER_VERSION}_linux_amd64.tar.gz /kube-router.tar.gz
+
+FROM base AS kube-router
+RUN --network=none \
+    --mount=type=bind,from=kube-router-src,target=/in \
+    --mount=type=tmpfs,target=/tmp \
+    tar -xzf /in/kube-router.tar.gz -C /tmp kube-router LICENSE && \
+    install -D -m 0755 /tmp/kube-router /out/usr/bin/kube-router && \
+    install -D -m 0644 /tmp/LICENSE /out/usr/share/licenses/kube-router/LICENSE && \
+    touch -d @0 /out/usr/bin/kube-router /out/usr/share/licenses/kube-router/LICENSE && \
+    /out/usr/bin/kube-router --version
 
 # the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
 FROM scratch AS home-dashboard-src
@@ -127,7 +144,8 @@ RUN --mount=type=bind,source=build/packages.sh,target=/ctx/build/packages.sh \
 # The last stage here, and the last one CI caches. Containerfile.tree then
 # pins directory mtimes and flattens it, uncached (new on every build).
 FROM packages AS rootfs
-COPY --link --from=k3s /out/ /
+COPY --link --from=kine /out/ /
+COPY --link --from=kube-router /out/ /
 COPY --link --from=home-dashboard /out/ /
 
 # Config overlay (systemd units, kargs, dracut, repart, scripts, ...)

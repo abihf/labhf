@@ -5,18 +5,18 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Requirement | How |
 |---|---|
 | Atomic updates | bootc **composefs backend**, images pulled from an OCI registry, `bootc upgrade` / `rollback` |
-| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
+| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0, plus a [rollback lock](#tpm-rollback-lock) (systemd-pcrlock on PCR 4): only UKIs of current bootc deployments unlock, not older signed releases |
-| Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for k3s hostPaths |
+| Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for Kubernetes hostPaths |
 | Disk health | `smartd` (smartmontools, Fedora's default `DEVICESCAN` config) checks the disks it finds, without waking spun-down ones (`-n standby`), and logs to the journal; disks behind USB bridges may need an explicit `-d sat` line in `/etc/smartmontools/smartd.conf` |
 | Performance | CPU EPP `balance_performance` (amd-pstate, udev); `nvidia-persistenced` (started by udev when the driver binds a GPU), `nvidia-powerd` (laptop Dynamic Boost) off; md `stripe_cache_size` 4096 and `mq-deadline` for rotational disks; TCP BBR + `fq`; no `init_on_free`, lazy IOTLB flushing. Nothing pins clocks high |
 | Network | systemd-networkd + systemd-resolved (no NetworkManager, no LLMNR/mDNS); DHCP on wired NICs by default, machine-local files in `/etc/systemd/network` |
-| DNS / DHCP | `/etc/resolv.conf` lists the network's DNS servers directly; resolved has no 127.0.0.53/54 stub, so port 53 stays free for a DNS server in k3s. `kea` (DHCPv4) is installed, `kea-dhcp4` disabled until a machine-local `/etc/kea/kea-dhcp4.conf` is in place |
-| Firewall | own nftables table `inet labhf` next to k3s's rules: inbound only SSH + Traefik/NodePorts by default, pod/service IPs not reachable from outside; machine-local `/etc/labhf/firewall.d/*.nft` |
+| DNS / DHCP | `/etc/resolv.conf` lists the network's DNS servers directly; resolved has no 127.0.0.53/54 stub, so port 53 stays free for a DNS pod on the host port. `kea` (DHCPv4) is installed, `kea-dhcp4` disabled until a machine-local `/etc/kea/kea-dhcp4.conf` is in place |
+| Firewall | own nftables table `inet labhf` next to Kubernetes rules: SSH and configured ingress hostPorts or NodePorts, pod/service IPs not reachable from outside; machine-local `/etc/labhf/firewall.d/*.nft` |
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
-| SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
-| k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
+| SELinux | Fedora targeted policy, enforcing; `container-selinux` |
+| Kubernetes + NVIDIA | Fedora Kubernetes 1.37 and CRI-O RPMs, OverlayFS image layers, standalone Kine with SQLite, and an NVIDIA RuntimeClass and device plugin |
 | Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by `labhf-install-disk`; `gui` (uid 2000) runs the dashboard |
 | Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000`, served by `home-dashboard.service` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
 
@@ -124,7 +124,7 @@ DNS=192.0.2.1
 ```
 
 Then `sudo networkctl reload` and `networkctl status`. Only links matching a
-`.network` file are touched, so k3s's `cni0`, `flannel.1` and `veth*` stay
+`.network` file are touched, so the pod bridge `labhf0` and `veth*` stay
 unmanaged. `network-online.target` waits for any one link (60s at most), so an
 unplugged second NIC doesn't hold boot. Kernel names (`eth0`) instead of
 `enp…`: `sudo ln -s /dev/null /etc/systemd/network/99-default.link`.
@@ -165,17 +165,16 @@ Address=10.0.0.1/24
 
 `labhf-firewall.service` loads [`/usr/lib/labhf/firewall.nft`](rootfs/usr/lib/labhf/firewall.nft)
 into its own table, `inet labhf`. It only ever replaces that table, never the
-whole ruleset: k3s's kube-proxy / flannel / network-policy rules live in their
-own iptables-nft tables, and Fedora's `nftables.service` (not used) would
+whole ruleset: kube-proxy, kube-router and the CNI plugins maintain their own rules, and Fedora's `nftables.service` (not used) would
 delete them on stop or reload with `nft flush ruleset`.
 
 | | Default |
 |---|---|
-| Input | established, loopback, k3s pods (`cni0`, `flannel.1`), ICMP/ICMPv6, DHCPv6 replies, **TCP 22**; everything else dropped (rate-limited log `labhf-fw in drop:`) |
-| Forward | established, pods, Traefik / NodePorts (DNAT from a host address); new connections from outside to pod or service IPs (10.42/16, 10.43/16) dropped, also after kube-proxy's DNAT; all other routing (e.g. LAN ↔ VPN) unchanged |
+| Input | established, loopback, pods (`labhf0`), ICMP/ICMPv6, DHCPv6 replies, **TCP 22**; everything else dropped (rate-limited log `labhf-fw in drop:`) |
+| Forward | established, pods, ingress hostPorts and NodePorts (DNAT from a host address); new connections from outside to pod or service IPs (10.42/16, 10.43/16) dropped, also after kube-proxy's DNAT; all other routing (e.g. LAN ↔ VPN) unchanged |
 | Output | untouched |
 
-So the k3s API (6443) and kubelet (10250) are reachable from the host and
+So the Kubernetes API (6443) and kubelet (10250) are reachable from the host and
 from pods only: use `kubectl` over ssh, or open 6443 for one subnet. Open
 ports and rules per machine in `/etc/labhf/firewall.d/*.nft` (loaded in the
 same transaction, after the base table):
@@ -195,6 +194,76 @@ check with `sudo nft -c -f /usr/lib/labhf/firewall.nft`. The QEMU VM forwards
 host port 6443, which the firewall now drops; add a local rule for
 `ip saddr 10.0.2.2` to use it.
 
+## Kubernetes
+
+Fedora's Kubernetes 1.37 RPMs provide the API server, controller manager,
+scheduler, kube-proxy, kubelet and CLI. The host runs the packaged services
+through `labhf-kubernetes.target`. CRI-O uses a dedicated OverlayFS store at
+`/var/lib/crio/overlay-storage`. On upgrade from the earlier composefs
+configuration, CRI-O pulls images into the new store and recreates pod
+sandboxes. The old store at `/var/lib/crio/storage` is available for rollback.
+Kine serves the API server
+over a root-only Unix socket and stores data in
+`/var/lib/labhf-kubernetes/db/state.db` on the encrypted state volume.
+
+Fresh installs bootstrap one schedulable node automatically, with CoreDNS,
+the NVIDIA RuntimeClass and device plugin. kube-router enforces Kubernetes
+NetworkPolicy for pod ingress and egress using Fedora's iptables and ipset.
+The single-node CNI bridge uses
+`10.42.0.0/24` within the reserved pod range `10.42.0.0/16`. Services use
+`10.43.0.0/16`. The API and kubelet use the IPv4 address selected by the
+default route. To pin it on a multi-homed machine, put
+`LABHF_KUBE_ADDRESS=192.0.2.10` in `/etc/kubernetes/labhf.env` before
+bootstrap, substituting an address assigned to the host.
+
+```bash
+sudo kubectl --kubeconfig=/var/lib/labhf-kubernetes/credentials/admin.conf get nodes
+sudo crictl info
+sudo journalctl -b -u labhf-kubernetes-prepare -u labhf-kine -u kube-apiserver -u labhf-kubernetes-addons
+```
+
+The administrator kubeconfig uses `https://localhost:6443` and works through
+`ssh -L 6443:localhost:6443` when copied securely to an administrator's
+machine. Back up the SQLite database and `credentials/` together, including
+the PKI and Secrets encryption key. Take a consistent SQLite backup or stop
+`labhf-kubernetes.target` before copying the state directory. kubeadm issues
+one-year control-plane and administrator certificates by default. Renew them
+using the existing CA before expiration. For certificates in `pki/`, run
+the relevant `kubeadm certs renew <certificate>` subcommands with
+`--cert-dir=/var/lib/labhf-kubernetes/credentials/pki`. Reissue the client
+kubeconfigs with `kubeadm init phase kubeconfig <name>` in an empty directory
+and use `kubeadm kubeconfig user --client-name system:kube-proxy` for
+`proxy.conf`, passing `--config /etc/kubernetes/labhf-kubeadm.yaml` to both.
+Restart the target after installing the renewed files. If a restored kubelet
+has lost its rotating certificate directory, generate a new kubelet
+kubeconfig and install it as `/var/lib/kubelet/labhf-kubelet.conf`.
+
+### Cut over from k3s
+
+1. On the current k3s deployment, collect the workload manifests or Helm
+   values, Secrets, and persistent-volume mappings you need to restore.
+   Identify PVCs backed by k3s local-path and back up their data. Stop k3s
+   before taking a filesystem backup of its complete server directory and
+   configuration. The backup includes its SQLite database, credentials,
+   token, and Secrets encryption material.
+2. Deploy the new image and reboot. The bootstrap detects the old
+   `/var/lib/rancher/k3s/server` and waits for authorization to initialize the
+   replacement cluster. Keep that directory for bootc rollback.
+3. Start the new cluster after checking the backup and preparing the
+   workload restore.
+
+   ```bash
+   sudo install -m 0600 /dev/null /etc/kubernetes/labhf-cutover
+   sudo systemctl start labhf-kubernetes.target
+   sudo kubectl --kubeconfig=/var/lib/labhf-kubernetes/credentials/admin.conf get nodes
+   ```
+
+4. Restore workloads and bind their persistent volumes to the existing
+   data. Restore ingress, storage provisioning and metrics explicitly if
+   your workloads used k3s's Traefik, ServiceLB, local-path provisioner, or
+   metrics-server. Check kube-router before bringing up workloads that rely
+   on NetworkPolicy. The new cluster has its own identity and SQLite database.
+
 ## Disk layout
 
 ```
@@ -213,11 +282,11 @@ into RAM or onto the state volume):
 | Mount | Source | Set up by | If missing |
 |---|---|---|---|
 | `/media/public` | symlink → `/home/public` (encrypted state volume) | image (symlink), tmpfiles (directory) | always there |
-| `/media/data` | mdadm array, fstab by UUID | `labhf-setup-raid adopt` (machine `/etc/fstab`) | boots (`nofail`); **k3s stays down** (`x-systemd.required-by`), so media apps never see an empty library |
+| `/media/data` | mdadm array, fstab by UUID | `labhf-setup-raid adopt` (machine `/etc/fstab`) | boots (`nofail`); **Kubernetes stays down** (`RequiresMountsFor=`), so media apps never see an empty library |
 | `/media/backup` | backup disk, fstab by UUID | by hand (fstab, e.g. `x-systemd.automount`) | |
 
 The RAID is mounted with `context=system_u:object_r:container_file_t:s0`, so
-with SELinux enforcing k3s pods may use it through hostPath and 22T never needs
+with SELinux enforcing pods may use it through hostPath and 22T never needs
 relabelling. `/home/public` gets the same type from an fcontext rule the image
 ships (in `/etc/selinux/targeted/active/file_contexts.local`; check with
 `matchpathcon /home/public`); after copying data in, run
@@ -316,7 +385,7 @@ nothing in it may depend on the commit or the clock:
   layer new on every build.
 - dnf's transaction history (build timestamps) is not shipped; font caches
   are rebuilt over the pinned directory mtimes.
-- Files the build installs itself (k3s, the signed NVIDIA modules) get a
+- Files the build installs itself (Kine, the signed NVIDIA modules) get a
   fixed mtime.
 
 Measured in QEMU: the image is 129 layers, 1.33 GiB with zstd (was one 4G
@@ -340,14 +409,14 @@ firmware, `microcode_ctl` (Intel CPU), `intel-mediasdk` and
 without `%doc`, and only English translations are kept; the base image's docs,
 man pages and other translations are deleted. Licenses stay (the image is
 redistributed). The build fails if a removal ever takes a package that matters
-(kernel, bootc, skopeo, WPE/cage/Mesa, NVIDIA, AMD/Realtek firmware, k3s
+(kernel, bootc, skopeo, WPE/cage/Mesa, NVIDIA, AMD/Realtek firmware, Kubernetes
 SELinux). Not removable: `flite` (WebKit speech synthesis) and `x265-libs`
 (via libheif-freeworld); either takes `wpewebkit` with it. The rpmdb stays:
 chunkah needs it for the layers, and scanners and `rpm -qf` need it.
 Uncompressed tree: 3.9G → 2.9G. Different hardware (Wi-Fi, Intel) may need
 some of these back.
 
-`/etc` is machine-local and 3-way merged on upgrade (k3s config,
+`/etc` is machine-local and 3-way merged on upgrade (Kubernetes config,
 crypttab, mdadm.conf live there). Local deletions survive too, e.g. a
 `systemctl disable`.
 
@@ -382,7 +451,7 @@ The layer cache of the `Containerfile` build (up to `rootfs`) is kept in
 `ghcr.io/<owner>/labhf-cache` (`--cache-from`/`--cache-to`, one tag per build
 step), so a run only rebuilds the steps whose inputs changed. Each app is its
 own stage, and each step mounts only the scripts it runs: editing
-`finalize.sh` keeps the dnf, NVIDIA, k3s and dashboard layers. Downloads are
+`finalize.sh` keeps the dnf, NVIDIA, Kine and dashboard layers. Downloads are
 `ADD --checksum` in `FROM scratch` stages, so they survive a new base image.
 Pinning directory mtimes and flattening (`Containerfile.tree`), chunkah and
 the seal run every time and are not cached: their layers change whenever
@@ -422,7 +491,7 @@ plain Fedora base, which run Fedora's tools and our scripts only:
 | `sdboot-sign` | systemd-boot | `systemd-sbsign` |
 | `sealer` | the UKI | `bootc container ukify` (the sealer's own bootc, byte-identical to the target's) |
 
-RPM Fusion's kmod build (its akmod SRPM), the RPM Fusion / COPR / NVIDIA / k3s installs and
+RPM Fusion's kmod build (its akmod SRPM), the RPM Fusion / COPR / NVIDIA / Kine installs and
 dracut (with installed packages' modules) run without the key, so their code
 can neither send it out nor hide it in the image. The kmod RPM is built
 unsigned; `packages.sh` lays the signed modules over its files and fails on any
@@ -496,7 +565,7 @@ existing install) belong in a git-ignored `MIGRATION.md`.
 6. Data array: `sudo labhf-setup-raid adopt` for an existing mdadm array (no
    data is changed), or `sudo labhf-setup-raid create DISK DISK DISK...` for a
    new one (destroys the disks).
-7. k3s hostPaths outside `/media/*` need an SELinux label pods may use. There
+7. Kubernetes hostPaths outside `/media/*` need an SELinux label pods may use. There
    is no Python, so no `semanage`: add the rule to the policy store's local
    file contexts (what `semanage fcontext -a` writes) and rebuild with
    `semodule`. The rule needs the `/var/home` path: `/home` is an equivalence
@@ -524,22 +593,20 @@ staged by this machine booted: rerun `labhf-enroll-tpm` only if you know why
 | Accounts | `root` and `gui` locked, `gui` has no shell; sudo asks for a password, `use_pty`, 5-minute timestamp; 5 failed passwords lock the account for 5 minutes (console, sudo) |
 | Kernel | `lockdown=confidentiality` (no kprobes, tracefs, kernel perf, BPF kernel reads, `/proc/kcore` or `/dev/mem`, even for root), `module.sig_enforce=1`, `debugfs=off`, no ftrace or tracefs mount, perf sampling at 1/s, no kexec-tools, `oops=panic`; `kptr_restrict`, `dmesg_restrict`, `hash_pointers=always`, no unprivileged BPF, userfaultfd, io_uring or perf, ptrace scope 1, no kexec, SysRq or binfmt_misc; `init_on_alloc`, `slab_nomerge`, `randomize_kstack_offset`, max mmap ASLR; no 32-bit userspace (`vsyscall=none vdso32=0 ia32_emulation=0`); RDRAND and boot loader seed not credited; no nested KVM; forced IOMMU with per-device isolation (lazy IOTLB flushing), `efi=disable_early_pci_dma`. Mostly secureblue's set, minus forced CPU mitigations, `nosmt`, `init_on_free`, strict IOTLB flushing (performance) and `slab_debug` |
 | Boot | `rd.shell=0 rd.emergency=reboot`, debug shell and Ctrl-Alt-Del masked, no serial console |
-| Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`), plus secureblue's list (`61-labhf-secureblue.conf`): IPsec/xfrm, l2tp, RxRPC, RDMA, NFS/CIFS/sunrpc, cdrom, DVB, joysticks, IR remotes, debug/test drivers. k3s volumes can't use NFS or SMB |
+| Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`), plus secureblue's list (`61-labhf-secureblue.conf`): IPsec/xfrm, l2tp, RxRPC, RDMA, NFS/CIFS/sunrpc, cdrom, DVB, joysticks, IR remotes, debug/test drivers. Kubernetes volumes can't use NFS or SMB |
 | Files | Setuid allow-list: only `sudo`, `passwd`, `unix_chkpwd`, `nvidia-modprobe`. `/home` is `nosuid,nodev`. No core dumps |
 | Packages | No Python (so no `semanage`, `audit2allow` or setools), no desktop portals, file indexer, audio stack, `nvidia-settings`/gtk3, shim or grub; none of the full base's sssd/samba, NFS client, LVM/udisks, clevis, fwupd, avahi or polkit (`build/packages.sh`). systemd-homed masked |
-| k3s | Secrets encrypted, `protect-kernel-defaults`, API audit log (metadata only) in `/var/lib/rancher/k3s/server/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
+| Kubernetes | Secrets encrypted, `protectKernelDefaults`, API audit log (metadata only) in `/var/lib/labhf-kubernetes/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
 | Kiosk | `NoNewPrivileges`, read-only system, private `/tmp`, restricted address families. Not `ProtectKernelTunables`, `ProtectKernelLogs` or `ProtectHostname`: each masks part of `/proc`, and WebKit's sandbox then can't mount its own |
-| Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, k3s, SELinux) |
+| Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, Kubernetes, CRI-O, SELinux) |
 
 `kernel.panic_on_oops=1` and `kernel.panic=10` are required by
-`protect-kernel-defaults`, so a kernel oops reboots the machine. With several
+`protectKernelDefaults`, so a kernel oops reboots the machine. With several
 keys in an agent, use `IdentitiesOnly yes` or `MaxAuthTries 3` may reject you.
 `/etc` and `/var` stay writable, so a root compromise can still persist there;
 the sealed image only protects `/usr`.
 
-Verified in QEMU: all of the above, except the IOMMU (QEMU has none here;
-see [Verified](#verified) for the real PC) and the `rd.emergency=reboot` path
-(not triggered).
+See [Verified](#verified) for results from previous images and hardware.
 
 ## Verified
 
@@ -549,14 +616,16 @@ see [Verified](#verified) for the real PC) and the `rd.emergency=reboot` path
 | Split root/state | `bootc switch` + reboot (staged finalize with `/sysroot/state` still mounted, `/etc` merged), `bootc rollback` both ways, TPM unlock across all of them; the plain root's `state/` stays empty | booted + rollback deployment from ghcr.io; the plain root's `state/` is empty (`mount --bind /sysroot /run/x && ls -A /run/x/state`) |
 | Chunked + sealed | `bootc switch`/`upgrade` to the chunkah image boots under Secure Boot (digest computed after chunking matches), TPM unlock, signed modules load | runs the CI-built chunked image |
 | NVIDIA modules | db-signed kmod accepted under lockdown (`.platform` keyring, no shim/MOK); split signing (akmods output unsigned, 5 modules signed in `nvidia-sign`); ESP systemd-boot from `sdboot-sign` boots, TPM unlock unchanged | under Secure Boot + `lockdown=confidentiality` the open module (620.70) loads, `nvidia-smi` lists the RTX 2000 Ada |
-| Data + k3s hostPaths | `labhf-setup-raid adopt`; a pod writes `/media/data` and `/media/public` (→ `/home/public`), files are `container_file_t`, cluster DNS and egress work, SELinux enforcing, no AVCs | 22T RAID5 (4 USB disks) at `/media/data`, `/home/public` `container_file_t`, k3s pods on both |
-| Firewall with k3s | from an untrusted client (veth + netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed; pods keep DNS, egress, the API server and metrics-server → kubelet; k3s's rules unchanged by start, reload and stop; no AVCs | |
+| Data + hostPaths (previous k3s image) | `labhf-setup-raid adopt`; a pod writes `/media/data` and `/media/public` (→ `/home/public`), files are `container_file_t`, cluster DNS and egress work, SELinux enforcing, no AVCs | 22T RAID5 (4 USB disks) at `/media/data`, `/home/public` `container_file_t`, k3s pods on both |
+| Firewall (previous k3s image) | from an untrusted client (veth + netns) 22 and Traefik 80/443 open, 6443/10250 and pod / service IPs closed; pods keep DNS, egress, the API server and metrics-server → kubelet; k3s's rules unchanged by start, reload and stop; no AVCs | |
 | Dashboard | virtio fallback, rotation | `labhf-gui: gpu card1/renderD128 (amdgpu) ... rotate HDMI-A-1 90` with defaults (no `gui.env`); `HDMI-A-1` the only enabled output, NVIDIA outputs off |
 | IOMMU arguments | (QEMU has no IOMMU here) | AMD-Vi active; NVIDIA, iGPU, NVMe and USB disks all work |
 | TPM rollback lock | pcrlock token unlocks in the initrd (policy from the ESP credential); `bootc upgrade` + reboot records the staged UKI at shutdown and unlocks unattended, the next boot drops the removed deployment; an older db-signed UKI booted as a one-shot entry stops at the passphrase prompt | not yet (see below) |
 
-Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
-`nvidia-device-plugin` pod fail; expected.
+The previous QEMU image had no NVIDIA GPU. On the replacement image,
+`scripts/vm-check.sh` exercises cluster DNS, local storage, Secret encryption,
+the firewall, and NetworkPolicy ingress and egress. Validate GPU allocation
+separately on the real hardware.
 
 ## Open items / known risks
 
@@ -579,11 +648,6 @@ Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
 - **Coarse IOMMU isolation** on the real PC: 5 IOMMU groups (no ACS on the
   board); the NVIDIA card shares one with its root port, the iGPU one with
   USB and the crypto engine.
-- **k3s restarts once or twice at boot** when a NIC gets a SLAAC IPv6
-  address after k3s has started: kube-proxy exits on a node IP change and
-  systemd restarts k3s (~20s). Seen in QEMU, not on the real PC's checked
-  boot (no `node-ip`, one global IPv6 address). Pin the address in
-  `/etc/rancher/k3s/config.yaml` (`node-ip: <LAN IPv4>`) if it shows up.
 - **`rd.emergency=reboot`** has not been triggered anywhere.
 - **Dashboard GPU**: the integrated GPU must stay enabled in the firmware
   when the NVIDIA card is installed (often "iGPU multi-monitor" / "IGD"). See
@@ -602,6 +666,6 @@ Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
 Copyright (C) 2026 Abi Hafshin. Licensed under the GNU General Public License
 v3.0 or later ([LICENSE](LICENSE), `SPDX-License-Identifier: GPL-3.0-or-later`).
 This covers the files in this repository. The built image also contains Fedora,
-RPM Fusion, NVIDIA, k3s and other packages under their own licenses (an
+RPM Fusion, NVIDIA, Kine, kube-router and other packages under their own licenses (an
 aggregate in GPL-3.0 terms); publishing the image means meeting those licenses
 too (e.g. corresponding source for GPL packages, NVIDIA's driver license).

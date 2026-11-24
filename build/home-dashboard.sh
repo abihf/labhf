@@ -10,5 +10,5 @@ set -euxo pipefail
 tar -xzf /in/home-dashboard.tar.gz -C /tmp --wildcards '*/home-dashboard'
 bin=$(echo /tmp/home-dashboard-*/home-dashboard)
 install -D -m 0755 "$bin" /out/usr/libexec/home-dashboard/home-dashboard
-# fixed mtime, so an unchanged binary keeps its layer (see k3s.sh)
+# fixed mtime, so an unchanged binary keeps its layer
 touch -d @0 /out/usr/libexec/home-dashboard/home-dashboard

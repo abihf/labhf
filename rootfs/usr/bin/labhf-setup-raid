@@ -7,15 +7,15 @@
 #                                      add the /media/data fstab entry
 #   labhf-setup-raid create DISK...    new RAID5 + ext4 (DESTROYS the disks)
 #
-# /media/data is required by k3s (as on the old Arch install): if the array is
-# missing, the machine still boots (nofail) but k3s stays down, so media apps
-# never see an empty library. context=container_file_t lets k3s pods use it
+# /media/data is required by Kubernetes (as on the old Arch install): if the array is
+# missing, the machine still boots (nofail) but Kubernetes stays down, so media apps
+# never see an empty library. context=container_file_t lets pods use it
 # through hostPath with SELinux enforcing, without relabelling the files.
 set -euo pipefail
 
 mountpoint=/media/data
 opts="nofail,nodev,nosuid,noexec,noatime,x-systemd.device-timeout=90s"
-opts+=",x-systemd.required-by=k3s.service,context=system_u:object_r:container_file_t:s0"
+opts+=",context=system_u:object_r:container_file_t:s0"
 
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }

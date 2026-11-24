@@ -8,6 +8,7 @@
 -w /etc/systemd/ -p wa -k systemd
 -w /etc/crypttab -p wa -k boot
 -w /etc/fstab -p wa -k boot
--w /etc/rancher/ -p wa -k k3s
+-w /etc/kubernetes/ -p wa -k kubernetes
+-w /etc/crio/ -p wa -k crio
 -w /etc/labhf/ -p wa -k labhf
 -w /etc/selinux/ -p wa -k selinux
