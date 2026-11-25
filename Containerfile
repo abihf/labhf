@@ -87,12 +87,12 @@ RUN --network=none \
     --mount=type=bind,from=k3s-src,target=/in \
     bash /ctx/k3s.sh
 
-# the dashboard server the kiosk shows (github.com/abihf/home-dashboard)
+# the native dashboard the kiosk runs under cage (github.com/abihf/home-dashboard)
 FROM scratch AS home-dashboard-src
-ARG HOME_DASHBOARD_VERSION=v0.0.3
-ARG HOME_DASHBOARD_SHA256=ef9d41a34e76e0a55364e07e491f8de55fda55802e8c6103bfca530f9a030e5b
+ARG HOME_DASHBOARD_VERSION=v0.1.0
+ARG HOME_DASHBOARD_SHA256=40e75b6ec9bd90a6a6593fa0630b9e20f74b2b510d76ca341c81489ecd9ebeb8
 ADD --link --checksum=sha256:${HOME_DASHBOARD_SHA256} \
-    https://github.com/abihf/home-dashboard/releases/download/${HOME_DASHBOARD_VERSION}/home-dashboard-${HOME_DASHBOARD_VERSION}-linux-x64.tar.gz \
+    https://github.com/abihf/home-dashboard/releases/download/${HOME_DASHBOARD_VERSION}/home-dashboard-${HOME_DASHBOARD_VERSION}-x86_64-linux.tar.gz \
     /home-dashboard.tar.gz
 
 FROM base AS home-dashboard
@@ -108,11 +108,6 @@ RUN --network=none \
 FROM base AS packages
 ARG FEDORA
 # third-party repo files (not pinned: a changed file re-runs the dnf step)
-# WPE WebKit was retired from Fedora; unofficial COPR by an Igalia dev.
-# Provides /usr/libexec/wpe-webkit-2.0/MiniBrowser.
-ADD --link --chmod=0644 \
-    https://copr.fedorainfracloud.org/coprs/philn/wpewebkit/repo/fedora-${FEDORA}/philn-wpewebkit-fedora-${FEDORA}.repo \
-    /etc/yum.repos.d/philn-wpewebkit.repo
 ADD --link --chmod=0644 \
     https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
     /etc/yum.repos.d/nvidia-container-toolkit.repo

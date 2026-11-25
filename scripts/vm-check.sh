@@ -88,9 +88,10 @@ kubectl delete secret labhf-check >/dev/null
 
 sec "kiosk (started, not enabled)"
 systemctl is-enabled gui; systemctl start gui
-for i in $(seq 1 15); do pgrep -x WPEWebProcess >/dev/null && break; sleep 2; done; sleep 5
+for i in $(seq 1 15); do pgrep -x home-dashboard >/dev/null && break; sleep 2; done; sleep 5
 echo "gui: $(systemctl is-active gui), restarts $(systemctl show gui -p NRestarts --value)"
-for p in $(pgrep -x WPEWebProcess) $(pgrep -x cage); do
+echo "  /var/lib/home-dashboard: $(stat -c '%F %U %a' /var/lib/home-dashboard)"
+for p in $(pgrep -x home-dashboard) $(pgrep -x cage); do
     echo "  $(cat /proc/$p/comm): $(grep -oE 'libgallium[^ ]*' /proc/$p/maps | sort -u) NoNewPrivs=$(awk '/NoNewPrivs/{print $2}' /proc/$p/status)"
 done
 systemctl stop gui

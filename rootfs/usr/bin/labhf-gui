@@ -1,27 +1,26 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Kiosk session for gui.service: pick the display GPU, then cage + MiniBrowser.
+# Kiosk session for gui.service: pick the display GPU, then cage + home-dashboard.
 #
 # The PC has two GPUs: the integrated AMD (drives the screen) and the NVIDIA
 # (compute for k3s). cardN/renderDN numbers depend on driver load order, so the
-# GPU is chosen by kernel driver name and pinned for wlroots, Mesa and WebKit.
+# GPU is chosen by kernel driver name and pinned for wlroots and Mesa.
 #
 # Settings (machine-local, /etc/labhf/gui.env, read by gui.service):
-#   GUI_URL=http://localhost:3000   page to show
+#   GUI_APP=/usr/bin/home-dashboard program cage runs
 #   GUI_GPU=amdgpu                  preferred driver (falls back to any non-NVIDIA
 #                                   card, then any card); e.g. amdgpu, i915, nvidia
 #   GUI_OUTPUT=HDMI-A-1             output to rotate, "all", or empty for none
 #   GUI_TRANSFORM=90                normal, 90, 180, 270, flipped-90, ...
-#   GUI_BROWSER_ARGS=""             extra MiniBrowser arguments
 set -uo pipefail
 
-: "${GUI_URL:=http://localhost:3000}" "${GUI_GPU:=amdgpu}"
-: "${GUI_OUTPUT=HDMI-A-1}" "${GUI_TRANSFORM:=90}" "${GUI_BROWSER_ARGS:=}"
-export GUI_URL GUI_OUTPUT GUI_TRANSFORM GUI_BROWSER_ARGS
+: "${GUI_APP:=/usr/bin/home-dashboard}" "${GUI_GPU:=amdgpu}"
+: "${GUI_OUTPUT=HDMI-A-1}" "${GUI_TRANSFORM:=90}"
+export GUI_APP GUI_OUTPUT GUI_TRANSFORM
 
 log() { echo "labhf-gui: $*" >&2; }
 
-# --- inside cage: rotate, then become the browser ----------------------------
+# --- inside cage: rotate, then become the dashboard --------------------------
 if [[ ${1:-} == --in-cage ]]; then
     if [[ -n $GUI_OUTPUT && $GUI_TRANSFORM != normal ]]; then
         if [[ $GUI_OUTPUT == all ]]; then
@@ -34,8 +33,7 @@ if [[ ${1:-} == --in-cage ]]; then
                 || log "could not rotate $o (outputs: $(wlr-randr | awk '/^[^ ]/{printf "%s ", $1}'))"
         done
     fi
-    # shellcheck disable=SC2086  # GUI_BROWSER_ARGS is a word list
-    exec /usr/libexec/wpe-webkit-2.0/MiniBrowser -f -p $GUI_BROWSER_ARGS "$GUI_URL"
+    exec "$GUI_APP"
 fi
 
 # --- pick the GPU ------------------------------------------------------------
@@ -78,16 +76,11 @@ render=$(ls "/sys/class/drm/$card/device/drm" | grep -m1 '^renderD')
 export WLR_DRM_DEVICES=/dev/dri/$card            # cage scans out only here
 if [[ -n $render ]]; then
     export WLR_RENDER_DRM_DEVICE=/dev/dri/$render  # cage renders here
-    export WEBKIT_WEB_RENDER_DEVICE_FILE=/dev/dri/$render
 fi
 # NVIDIA's EGL vendor ranks first in glvnd; keep it out of a Mesa GPU's session
 if [[ $drv != nvidia ]]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
-log "gpu $card${render:+/$render} ($drv), url $GUI_URL, rotate ${GUI_OUTPUT:-none} $GUI_TRANSFORM"
+log "gpu $card${render:+/$render} ($drv), app $GUI_APP, rotate ${GUI_OUTPUT:-none} $GUI_TRANSFORM"
 
-# pam_systemd gives local-seat sessions ambient CAP_WAKE_ALARM; WebKit's
-# bubblewrap sandbox aborts on any capability ("Unexpected capabilities but
-# not setuid"), so drop them before cage starts.
-exec setpriv --inh-caps=-all --ambient-caps=-all -- \
-    cage -- "$0" --in-cage
+exec cage -- "$0" --in-cage

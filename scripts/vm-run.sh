@@ -7,9 +7,8 @@ cd "$(dirname "$0")/.."
 : "${VM_MEM:=6G}" "${VM_CPUS:=4}" "${VM_GL:=1}"
 nic=(-netdev "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::6443-:6443"
      -device "virtio-net-pci,netdev=n0")
-# virgl (VM_GL=1): the guest render node gets real 3D. Without it, WebKit's web
-# process can't allocate buffers (dumb buffers are refused on render nodes) and
-# MiniBrowser stays black. VM_GL=0: plain virtio-vga, e.g. without host GL.
+# virgl (VM_GL=1): the guest render node gets real 3D. VM_GL=0: plain
+# virtio-vga, e.g. without host GL; cage and the dashboard then use llvmpipe.
 if (( VM_GL )); then
     gpu=virtio-vga-gl; : "${VM_DISPLAY:=gtk,gl=on}"
 else

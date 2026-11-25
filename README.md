@@ -18,7 +18,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
 | Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by `labhf-install-disk`; `gui` (uid 2000) runs the dashboard |
-| Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + WPE `MiniBrowser` → `http://localhost:3000`, served by `home-dashboard.service` (a pinned release of [home-dashboard](https://github.com/abihf/home-dashboard), DynamicUser, localhost only; settings such as `BG_DIR` in `/etc/labhf/home-dashboard.env`) |
+| Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + [home-dashboard](https://github.com/abihf/home-dashboard) (a pinned release; native Wayland, OpenGL ES; no network); backgrounds in `/var/lib/home-dashboard/bg`, settings in `/etc/labhf/home-dashboard.env` |
 
 ## Layout
 
@@ -76,21 +76,46 @@ labhf-setup-raid create /dev/vdb /dev/vdc /dev/vdd   # RAID5 test (adopt: reuse 
 GPUs, and `cardN` numbers depend on driver load order, so the script picks
 the card by kernel driver (`GUI_GPU`, default `amdgpu`; falls back to any
 non-NVIDIA card, then any card). It pins cage (`WLR_DRM_DEVICES`,
-`WLR_RENDER_DRM_DEVICE`), WebKit (`WEBKIT_WEB_RENDER_DEVICE_FILE`) and Mesa's
-EGL (NVIDIA's EGL is skipped) to that card, rotates the output, then runs
-MiniBrowser. Settings live in a machine-local env file (survives `bootc upgrade`):
+`WLR_RENDER_DRM_DEVICE`) and Mesa's EGL (NVIDIA's EGL is skipped) to that
+card, rotates the output, then runs `GUI_APP` (`/usr/bin/home-dashboard`),
+which inherits cage's GPU. Settings live in machine-local env files (survive
+`bootc upgrade`):
 
 ```bash
 sudo tee /etc/labhf/gui.env <<'EOF'
-GUI_URL=http://localhost:3000
 GUI_GPU=amdgpu          # driver name: amdgpu, i915, xe, nvidia
 GUI_OUTPUT=HDMI-A-1     # output to rotate, "all", or empty for none
 GUI_TRANSFORM=90        # normal, 90, 180, 270, flipped-90, ...
-#GUI_BROWSER_ARGS=--bg-color=black
+EOF
+# the dashboard's own settings (see its README): defaults shown
+sudo tee /etc/labhf/home-dashboard.env <<'EOF'
+MONITOR_NET_IFACE=eth1
+MONITOR_CPU_SENSOR=k10temp
+MONITOR_DISK_ROOT=/
+MONITOR_DISK_MEDIA=/media/data
 EOF
 sudo systemctl restart gui.service
 journalctl -b -t labhf-gui | grep labhf-gui:     # which GPU/output it picked
 ```
+
+Backgrounds: `BG_DIR=/var/lib/home-dashboard/bg` (root-owned; the dashboard
+only reads it) holds `list.json` and the JPEG/PNG images it names, each shown
+20 s:
+
+```bash
+sudo install -d /var/lib/home-dashboard/bg
+sudo install -m 0644 frieren.jpg /var/lib/home-dashboard/bg/
+sudo tee /var/lib/home-dashboard/bg/list.json <<'EOF'
+[{ "background": "frieren.jpg", "clockPos": 100, "statusPos": 720 }]
+EOF
+```
+
+Machines that ran the old browser kiosk keep their images: the first start of
+`gui.service` moves the old dashboard server's `DynamicUser` directory
+(`/var/lib/private/home-dashboard`, behind a symlink) back to
+`/var/lib/home-dashboard` and makes it root's. Not `StateDirectory=`: systemd's
+own migration runs as `init_t`, which may not unlink that symlink. An old `home-dashboard.env` keeps working (`HOST`/`PORT` are
+unused now).
 
 The script's output is in the login session's scope (`PAMName=`), not
 under `-u gui.service`, hence `-t`. In QEMU (output `Virtual-1`, no AMD card)
@@ -99,9 +124,8 @@ only `GUI_TRANSFORM=normal` is needed. Images built before `labhf-gui` used an `
 `sudo rm -r /etc/systemd/system/gui.service.d && sudo systemctl daemon-reload`.
 
 `make vm-run` uses a virgl GPU (`virtio-vga-gl`, `gtk,gl=on`). With plain
-`virtio-vga` (`VM_GL=0 make vm-run`) the guest has no 3D, WebKit's web process
-fails with `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied`, and the
-page stays black. Switching the GPU kept TPM unlock working (PCRs unchanged).
+`virtio-vga` (`VM_GL=0 make vm-run`) the guest has no 3D and cage and the
+dashboard render with llvmpipe. Switching the GPU kept TPM unlock working (PCRs unchanged).
 
 ### Network
 
@@ -336,13 +360,12 @@ layers stay accurate), what this machine never uses: `qemu-user-static-*`
 `s3transfer`), `nvidia-gpu-firmware` (nouveau's; the driver's own firmware
 comes with `xorg-x11-drv-nvidia`), Wi-Fi/WWAN and Intel GPU/NPU/audio
 firmware, `microcode_ctl` (Intel CPU), `intel-mediasdk` and
-`mesa-vulkan-drivers` (cage and WPE render with GL). Our packages install
+`mesa-vulkan-drivers` (cage and the dashboard render with GL). Our packages install
 without `%doc`, and only English translations are kept; the base image's docs,
 man pages and other translations are deleted. Licenses stay (the image is
 redistributed). The build fails if a removal ever takes a package that matters
-(kernel, bootc, skopeo, WPE/cage/Mesa, NVIDIA, AMD/Realtek firmware, k3s
-SELinux). Not removable: `flite` (WebKit speech synthesis) and `x265-libs`
-(via libheif-freeworld); either takes `wpewebkit` with it. The rpmdb stays:
+(kernel, bootc, skopeo, cage/Mesa/Wayland, NVIDIA, AMD/Realtek firmware, k3s
+SELinux). The rpmdb stays:
 chunkah needs it for the layers, and scanners and `rpm -qf` need it.
 Uncompressed tree: 3.9G → 2.9G. Different hardware (Wi-Fi, Intel) may need
 some of these back.
@@ -526,9 +549,9 @@ staged by this machine booted: rerun `labhf-enroll-tpm` only if you know why
 | Boot | `rd.shell=0 rd.emergency=reboot`, debug shell and Ctrl-Alt-Del masked, no serial console |
 | Modules | `firewire-*`, `thunderbolt`, `bluetooth`, rare protocols and filesystems can't load (`usr/lib/modprobe.d/60-labhf-unused.conf`), plus secureblue's list (`61-labhf-secureblue.conf`): IPsec/xfrm, l2tp, RxRPC, RDMA, NFS/CIFS/sunrpc, cdrom, DVB, joysticks, IR remotes, debug/test drivers. k3s volumes can't use NFS or SMB |
 | Files | Setuid allow-list: only `sudo`, `passwd`, `unix_chkpwd`, `nvidia-modprobe`. `/home` is `nosuid,nodev`. No core dumps |
-| Packages | No Python (so no `semanage`, `audit2allow` or setools), no desktop portals, file indexer, audio stack, `nvidia-settings`/gtk3, shim or grub; none of the full base's sssd/samba, NFS client, LVM/udisks, clevis, fwupd, avahi or polkit (`build/packages.sh`). systemd-homed masked |
+| Packages | No Python (so no `semanage`, `audit2allow` or setools), no desktop portals, file indexer, audio stack, fonts or fontconfig, `nvidia-settings`/gtk3, shim or grub; no kmscon (VT logins are plain `agetty` on the kernel console); none of the full base's sssd/samba, NFS client, LVM/udisks, clevis, fwupd, avahi or polkit (`build/packages.sh`). systemd-homed masked |
 | k3s | Secrets encrypted, `protect-kernel-defaults`, API audit log (metadata only) in `/var/lib/rancher/k3s/server/logs/`. Pod Security warns and audits at `baseline` but doesn't enforce, because baseline forbids hostPath; enforce per namespace with `pod-security.kubernetes.io/enforce=baseline` |
-| Kiosk | `NoNewPrivileges`, read-only system, private `/tmp`, restricted address families. Not `ProtectKernelTunables`, `ProtectKernelLogs` or `ProtectHostname`: each masks part of `/proc`, and WebKit's sandbox then can't mount its own |
+| Kiosk | No browser or network: cage + a native app, `AF_UNIX`/`AF_NETLINK` only. No capabilities, `NoNewPrivileges`, read-only system, private `/tmp`, no namespaces, kernel tunables/logs/modules/clock/hostname protected |
 | Audit | `auditd` logs changes to the machine-local `/etc` (accounts, sudo, SSH, systemd, k3s, SELinux) |
 
 `kernel.panic_on_oops=1` and `kernel.panic=10` are required by
@@ -590,8 +613,6 @@ Without an NVIDIA GPU (the VM) `nvidia-cdi-refresh` and the
   [Dashboard settings](#dashboard-settings-etclabhfguienv).
 - **QEMU TPM** needs Fedora's 4M OVMF (qcow2). The 2M raw build has no TPM:
   every PCR stays zero and `bootctl status` says "firmware unavailable".
-- **WPE WebKit** comes from the unofficial COPR `philn/wpewebkit` (retired from
-  Fedora). Fallback: `webkitgtk6.0`/epiphany or chromium `--kiosk`.
 - Sealed images are Tech Preview upstream; composefs has no boot counting /
   automatic rollback yet.
 - Kernel args are fixed in the signed UKI; change them in

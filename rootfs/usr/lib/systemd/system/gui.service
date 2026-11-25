@@ -1,11 +1,9 @@
 [Unit]
-Description=Auto-login gui session: cage + WPE MiniBrowser on tty1
-After=systemd-user-sessions.service plymouth-quit-wait.service network-online.target
-Wants=network-online.target
-# Fedora's VT console is kmscon (autovt@ -> kmsconvt@); it holds DRM master
-# on tty1, and cage then fails with "Could not take device: busy".
-Conflicts=getty@tty1.service kmsconvt@tty1.service autovt@tty1.service
-After=getty@tty1.service kmsconvt@tty1.service autovt@tty1.service
+Description=Auto-login gui session: cage + home dashboard on tty1
+After=systemd-user-sessions.service plymouth-quit-wait.service
+# tty1 is the kiosk's: no login prompt there while it runs
+Conflicts=getty@tty1.service autovt@tty1.service
+After=getty@tty1.service autovt@tty1.service
 
 [Service]
 Type=simple
@@ -22,28 +20,42 @@ StandardError=journal
 UtmpIdentifier=tty1
 UtmpMode=user
 Environment=XDG_SESSION_TYPE=wayland
-# GUI_URL, GUI_GPU, GUI_OUTPUT, GUI_TRANSFORM: see /usr/bin/labhf-gui
+# GUI_APP, GUI_GPU, GUI_OUTPUT, GUI_TRANSFORM: see /usr/bin/labhf-gui
 EnvironmentFile=-/etc/labhf/gui.env
+# Dashboard settings: BG_DIR (list.json + images) and MONITOR_* (network
+# interface, CPU sensor, disks); machine-local overrides in home-dashboard.env
+Environment=BG_DIR=/var/lib/home-dashboard/bg
+EnvironmentFile=-/etc/labhf/home-dashboard.env
+# /var/lib/home-dashboard (tmpfiles.d/labhf.conf): root-owned, the dashboard
+# only reads it. The old dashboard server (DynamicUser) kept it in
+# /var/lib/private/home-dashboard behind a symlink: move it here once, as root.
+# Not StateDirectory=: systemd's own migration runs as init_t, which the
+# policy doesn't let unlink that symlink.
+ExecStartPre=+/usr/bin/sh -c 'if [ -L /var/lib/home-dashboard ] && [ -d /var/lib/private/home-dashboard ]; then rm /var/lib/home-dashboard && mv /var/lib/private/home-dashboard /var/lib/home-dashboard && chown -R root:root /var/lib/home-dashboard; fi'
 ExecStart=/usr/bin/labhf-gui
 Restart=always
 RestartSec=5
 
-# Hardening. Not PrivateDevices (DRM, input, tty) and not RestrictNamespaces
-# or a syscall filter: WebKit's bwrap sandbox needs user namespaces.
-# Not ProtectKernelTunables, ProtectKernelLogs or ProtectHostname either: each
-# bind-mounts over part of /proc, and the kernel then refuses bwrap's new proc
-# mount ("Can't mount proc on /proc: Operation not permitted").
+# Hardening. Not PrivateDevices: cage needs DRM, input and the tty (opened
+# through logind, so no capabilities either).
 NoNewPrivileges=yes
+CapabilityBoundingSet=
 ProtectSystem=strict
+# cage creates its Wayland socket in the session's XDG_RUNTIME_DIR
 ReadWritePaths=-/run/user/2000 -/var/home/gui
 PrivateTmp=yes
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
+ProtectHostname=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

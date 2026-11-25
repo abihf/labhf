@@ -18,7 +18,6 @@ systemctl enable \
     var-home.mount \
     auditd.service \
     k3s.service \
-    home-dashboard.service \
     smartd.service \
     labhf-k3s-manifests.service \
     labhf-firstboot-passwd.service \
@@ -29,6 +28,9 @@ systemctl enable \
 # its RPM preset
 systemctl disable nvidia-powerd.service
 systemctl set-default multi-user.target
+# VT logins: plain getty on the kernel console. The base image's preset made
+# kmscon autovt@'s implementation; kmscon is removed (packages.sh)
+ln -sf /usr/lib/systemd/system/getty@.service /etc/systemd/system/autovt@.service
 # gui.service (kiosk on tty1) stays disabled: until the TPM is enrolled, tty1
 # must show the LUKS passphrase prompt / a login. Enabled by hand afterwards.
 # DNS from networkd (DNS= / DHCP), via resolved's uplink file: programs that

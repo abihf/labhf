@@ -23,9 +23,8 @@ dnf -y install \
     "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedver}.noarch.rpm" \
     "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${fedver}.noarch.rpm"
 
-# COPR wpewebkit and nvidia-container-toolkit .repo files: ADDed by the
-# Containerfile (packages stage)
-ls /etc/yum.repos.d/philn-wpewebkit.repo /etc/yum.repos.d/nvidia-container-toolkit.repo
+# nvidia-container-toolkit .repo file: ADDed by the Containerfile (packages stage)
+ls /etc/yum.repos.d/nvidia-container-toolkit.repo
 
 cat > /etc/yum.repos.d/rancher-k3s-common.repo <<'EOF'
 [rancher-k3s-common-stable]
@@ -54,13 +53,15 @@ dnf -y install \
     systemd-networkd wireguard-tools kea \
     container-selinux k3s-selinux \
     audit \
-    cage wlr-randr wpewebkit \
-    mesa-dri-drivers \
-    google-noto-sans-fonts google-noto-emoji-fonts \
+    cage wlr-randr \
+    mesa-dri-drivers libglvnd-egl libglvnd-gles libwayland-client libwayland-egl \
     nvidia-container-toolkit \
     "xorg-x11-drv-nvidia-${nvidia_evr}" \
     "xorg-x11-drv-nvidia-cuda-${nvidia_evr}" \
     /ctx/nvidia/kmod-nvidia-*.rpm
+# home-dashboard is not an RPM, so nothing requires the libraries it loads;
+# keep the strip step's dnf remove from cleaning them up as unused
+dnf -y mark user libglvnd-egl libglvnd-gles libwayland-client libwayland-egl
 
 # The kmod RPM is built unsigned (RPM Fusion's build never sees the db key);
 # the nvidia-sign stage signed its modules. Lay them over the RPM's files and
@@ -97,14 +98,12 @@ strip_pkgs=(
     intel-gpu-firmware intel-npu-firmware intel-audio-firmware cirrus-audio-firmware
     microcode_ctl                              # Intel CPU microcode (AMD here)
     intel-mediasdk                             # Intel video (libvpl weak dep)
-    mesa-vulkan-drivers                        # weak dep; cage/WPE render with GL (174M)
+    mesa-vulkan-drivers                        # weak dep; cage and the dashboard render with GL (174M)
     kexec-tools makedumpfile                   # no kdump: kexec_load_disabled=1
     xdg-desktop-portal-gtk xdg-desktop-portal  # desktop portals, with geoclue2/ModemManager (32M)
     localsearch tinysparql                     # file indexer, metadata miners: osinfo, exiv2, poppler (65M)
     pipewire-alsa pipewire-jack-audio-connection-kit pipewire-pulseaudio
     pipewire-plugin-libcamera                  # kiosk has no audio; pipewire/wireplumber/libcamera follow
-    hunspell-en-AU hunspell-en-CA hunspell-en-GB  # not hunspell-en(-US): wpewebkit's enchant2 needs one
-    libheif-freeworld                          # HEVC/HEIC images in WebKit (25M)
     7zip os-prober xfsprogs efibootmgr         # less's weak dep; grub; no XFS; systemd-boot sets its entries
     policycoreutils-python-utils setools-console  # semanage etc.: Python (base image ships them)
     # what the full fedora-bootc base brings for other kinds of machines:
@@ -127,10 +126,10 @@ strip_pkgs=(
     man-db groff-base net-tools iptables-services gawk-all-langpacks bind-utils bind-libs
                                                # no docs shipped; legacy tools
     polkit polkit-libs                         # admin is sudo only; its setuid helper is stripped
+    kmscon                                     # DRM console; plain getty on fbcon instead (finalize.sh)
+    adwaita-mono-fonts adwaita-sans-fonts fonts-filesystem  # no fontconfig user left; the dashboard embeds its font
     # kept on purpose: cracklib-dicts (pam_pwquality), glibc-gconv-extra (glibc),
     # nvme-cli sg3_utils lsof ethtool socat iproute-tc jq vim-minimal irqbalance
-    # not flite (WebKit's speech synthesis) or x265-libs on its own: removing
-    # either takes wpewebkit with it
 )
 # GTK settings GUI, hard-required by xorg-x11-drv-nvidia but unused by the
 # driver, CUDA and the container toolkit. Removed first, so the dnf remove
@@ -138,11 +137,10 @@ strip_pkgs=(
 rpm -e --nodeps nvidia-settings
 mapfile -t present < <(rpm -qa --qf '%{NAME}\n' "${strip_pkgs[@]}" | sort -u)
 (( ${#present[@]} )) && dnf -y remove "${present[@]}"
-# No Python on the machine (~59M). kea (kea-shell), at-spi2-core,
-# xorg-x11-drv-nvidia (nvidia-networking-bug-report.py), gstreamer1 (a doc
-# generator) and libwacom (libwacom-update-db) require python3 only for
-# scripts nothing runs, and those are dead now; a dnf remove would take
-# wpewebkit, cage, kea and the driver with it. SELinux file contexts come from
+# No Python on the machine (~59M). kea (kea-shell), xorg-x11-drv-nvidia
+# (nvidia-networking-bug-report.py) and libwacom (libwacom-update-db, via
+# cage's libinput) require python3 only for scripts nothing runs, and those
+# are dead now; a dnf remove would take cage, kea and the driver with it. SELinux file contexts come from
 # a CIL module (semodule) instead of semanage: see finalize.sh.
 rpm -qa --qf '%{NAME}\n' 'python*' mpdecimal | xargs -r rpm -e --nodeps
 # rpm leaves the removed packages' system accounts behind, and bootc lint
@@ -151,14 +149,14 @@ for u in geoclue pipewire rtkit usbmuxd; do
     if getent passwd "$u" >/dev/null; then userdel "$u"; fi
     if getent group "$u" >/dev/null; then groupdel "$u"; fi
 done
-keep=(kernel-core bootc skopeo podman wpewebkit cage mesa-dri-drivers llvm-libs
+keep=(kernel-core bootc skopeo podman cage mesa-dri-drivers llvm-libs libwayland-egl libglvnd-egl
       linux-firmware amd-gpu-firmware amd-ucode-firmware realtek-firmware
       xorg-x11-drv-nvidia xorg-x11-drv-nvidia-cuda-libs nvidia-container-toolkit
-      container-selinux k3s-selinux systemd-networkd kmscon fuse3)
+      container-selinux k3s-selinux systemd-networkd fuse3)
 rpm -q "${keep[@]}"
 if rpm -qa 'qemu-user-static*' python3-botocore nvidia-gpu-firmware localsearch \
         pipewire nvidia-settings python3 policycoreutils-python-utils \
-        sssd-common avahi fwupd lvm2 nfs-utils polkit | grep .; then
+        sssd-common avahi fwupd lvm2 nfs-utils polkit kmscon fontconfig adwaita-sans-fonts | grep .; then
     echo "strip list not removed" >&2; exit 1
 fi
 if command -v python3; then echo "python3 still installed" >&2; exit 1; fi

@@ -50,7 +50,7 @@ FROM signed
 COPY --from=sealer /out/boot /boot
 LABEL containers.bootc=1
 LABEL org.opencontainers.image.title="labhf"
-LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: k3s, NVIDIA, mdadm, cage+WPE kiosk"
+LABEL org.opencontainers.image.description="Sealed Fedora bootc homelab image: k3s, NVIDIA, mdadm, cage dashboard kiosk"
 ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

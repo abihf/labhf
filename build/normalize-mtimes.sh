@@ -23,7 +23,11 @@ pin_dirs() {
 pin_dirs
 
 # fontconfig's caches record their font directories' mtimes: rebuild them
-# over the pinned ones (same fonts -> same caches), then pin the cache dir
-fc-cache -s -f
-pin_dirs
+# over the pinned ones (same fonts -> same caches), then pin the cache dir.
+# Nothing in the image needs fontconfig now (the dashboard embeds its font),
+# but a package may bring it back.
+if command -v fc-cache >/dev/null; then
+    fc-cache -s -f
+    pin_dirs
+fi
 
