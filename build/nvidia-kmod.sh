@@ -3,11 +3,14 @@
 # NVIDIA *open* kernel module for the image's kernel, signed with our Secure
 # Boot db key. The key never meets third-party code or the network:
 #
-#   nvidia-build stage (base + RPM Fusion):
+# Both stages are plain Fedora (kmod-base), not the bootc base: KVER is the
+# base image's kernel, NVIDIA_VERSION the akmod-nvidia to build (build args).
+#
+#   nvidia-build stage (kmod-base + RPM Fusion):
 #     deps        online, no key: RPM Fusion repos, kernel-devel, akmod-nvidia
 #     build       --network=none, no key: rpmbuild of the akmod SRPM ->
 #                 unsigned kmod RPM in /out
-#   nvidia-sign stage (clean base, Fedora packages only):
+#   nvidia-sign stage (clean kmod-base, Fedora packages only):
 #     sign-deps   online, no key: kernel-devel (for scripts/sign-file), cpio
 #     sign        --network=none, key: sign every .ko from the RPM with
 #                 Fedora's sign-file -> /out/modules/..., /out/signer
@@ -19,7 +22,7 @@ set -euxo pipefail
 # Keep downloaded RPMs in the build cache mount (/var/cache/libdnf5)
 dnf() { command dnf --setopt=keepcache=True "$@"; }
 
-kver=$(ls /usr/lib/modules)
+kver=${KVER:?build arg KVER (kernel of the base image) is not set}
 fedver=$(rpm -E %fedora)
 
 # kernel-devel must match the image kernel exactly. Fedora's updates repo only
@@ -49,7 +52,7 @@ deps)
 %clamp_mtime_to_source_date_epoch 1
 %_buildhost labhf
 MACROS
-    dnf -y install akmods akmod-nvidia
+    dnf -y install akmods "akmod-nvidia-${NVIDIA_VERSION:?build arg NVIDIA_VERSION is not set}"
     ;;
 
 build)
@@ -72,10 +75,13 @@ build)
 
 sign-deps)
     install_kernel_devel
-    dnf -y install cpio xz zstd openssl
+    # kmod: modinfo (plain Fedora doesn't have it, the bootc base does)
+    dnf -y install cpio xz zstd openssl kmod
     ;;
 
 sign)
+    # the signer checks below are empty, not failing, without modinfo
+    command -v modinfo
     signfile=/usr/src/kernels/${kver}/scripts/sign-file
     rpmfile=$(ls /in/kmod-nvidia-"${kver}"-*.rpm)
     work=/tmp/kmod

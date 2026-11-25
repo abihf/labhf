@@ -410,8 +410,14 @@ own stage, and each step mounts only the scripts it runs: editing
 Pinning directory mtimes and flattening (`Containerfile.tree`), chunkah and
 the seal run every time and are not cached: their layers change whenever
 `rootfs` does, and the flat one is the whole image. A new
-digest of `quay.io/fedora/fedora-bootc` (frequent) invalidates every step after
-`FROM base`. Package updates that land without a new base image wait for the next
+digest of `quay.io/fedora/fedora-bootc` (every day or two) invalidates every step after
+`FROM base`. The NVIDIA kmod stages are not built on it: they start from a
+digest-pinned `quay.io/fedora/fedora:45` (`KMOD_BASE` in the Makefile, bump it
+now and then) and take the base image's kernel and RPM Fusion's `akmod-nvidia`
+version as build arguments (`scripts/nvidia-versions.sh`), so the module is
+only rebuilt when one of those changes. Local builds remember RPM Fusion's
+answer for 12 hours in `out/nvidia-version` (delete it to ask again, or pin a
+version with `make build NVIDIA_VERSION=3:620.73.04-1.fc45`). Package updates that land without a new base image wait for the next
 one. Keep the `labhf-cache`
 package private, and prune old tags now and then; the dnf download cache
 (`--mount=type=cache`) is not part of it.

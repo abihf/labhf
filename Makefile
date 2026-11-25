@@ -10,6 +10,14 @@ TOOLS_IMAGE ?= localhost/labhf-tools:latest
 REGISTRY    ?= localhost:5000
 VM_REGISTRY ?= 10.0.2.2:5000
 FEDORA      ?= 45
+BASE        ?= quay.io/fedora/fedora-bootc:$(FEDORA)
+# plain Fedora for the NVIDIA kmod stages, pinned so their layer cache only
+# misses when the kernel or the driver changes (scripts/nvidia-versions.sh);
+# bump now and then (multi-arch index digest)
+KMOD_BASE   ?= quay.io/fedora/fedora:45@sha256:92837d4834c1cff45cc2d534b655489b8e536271de1897932117e396cc9980c5
+# akmod-nvidia to build; empty: RPM Fusion's newest, remembered for 12 hours in
+# out/nvidia-version (delete it to ask again)
+NVIDIA_VERSION ?=
 # extra `podman build` flags for the final (sealed) image, e.g. --label ... (CI)
 BUILD_ARGS  ?=
 # chunkah splits the flat tree into content-based layers (pinned by digest)
@@ -82,7 +90,10 @@ SIGN_ARGS = --secret id=sb_key,src=keys/db.key --secret id=sb_cert,src=keys/db.c
 #    /sysroot/ is emptied: the base image's ostree repo (2G) is unused with composefs
 # 3. seal: composefs digest + signed UKI over the chunked layers
 build: keys/db.key
+	nvidia_args=$$(PODMAN="$(PODMAN)" NVIDIA_VERSION="$(NVIDIA_VERSION)" \
+	  NVIDIA_VERSION_CACHE=out/nvidia-version scripts/nvidia-versions.sh $(BASE) $(KMOD_BASE)); \
 	$(PODMAN) build --build-arg FEDORA=$(FEDORA) $(SIGN_ARGS) \
+	  --build-arg BASE=$(BASE) --build-arg KMOD_BASE=$(KMOD_BASE) $$nvidia_args \
 	  --build-arg SERIAL_CONSOLE=$(SERIAL_CONSOLE) \
 	  --security-opt label=disable \
 	  --build-context keys=$(KEYS_DIR) \

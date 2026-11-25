@@ -8,6 +8,7 @@
 #
 # Stages:
 #   base            upstream Fedora bootc image
+#   kmod-base       plain Fedora, pinned by digest (KMOD_BASE, from the Makefile)
 #   nvidia-build    builds the NVIDIA open kernel module, unsigned (only compile step)
 #   nvidia-sign     signs its .ko files
 #   k3s, home-dashboard   one per downloaded app (ADD --checksum), files in /out
@@ -23,8 +24,8 @@
 # the changed ones instead of the whole image (bootc has no partial pulls).
 #
 # The db key (build secret sb_key) is mounted ONLY in --network=none steps of
-# stages built from the clean Fedora base: nvidia-sign here, sdboot-sign and
-# sealer in Containerfile.seal.
+# stages built from a clean Fedora image: nvidia-sign here (kmod-base),
+# sdboot-sign and sealer in Containerfile.seal.
 # Steps that run third-party code (RPM Fusion, COPR, NVIDIA, k3s, dracut
 # modules of installed packages) never see it, so they can neither send it
 # anywhere nor hide it in the image.
@@ -33,13 +34,24 @@
 
 ARG FEDORA=45
 ARG BASE=quay.io/fedora/fedora-bootc:${FEDORA}
+# plain Fedora for the kmod stages, pinned by digest (set by the Makefile)
+ARG KMOD_BASE
 
 FROM ${BASE} AS base
 
 # ---------------------------------------------------------------------------
+# NVIDIA kmod. Not FROM base: its image changes every day or two, and every
+# step after FROM base misses the layer cache. Built on the pinned KMOD_BASE
+# for KVER (the base image's kernel) and NVIDIA_VERSION (RPM Fusion's
+# akmod-nvidia), both set by the Makefile (scripts/nvidia-versions.sh), so the
+# cache only misses when the kernel or the driver changes.
 # Only the script is mounted (not all of build/): editing other build scripts
 # must not invalidate the slow kmod build.
-FROM base AS nvidia-build
+FROM ${KMOD_BASE} AS kmod-base
+
+FROM kmod-base AS nvidia-build
+ARG KVER
+ARG NVIDIA_VERSION
 RUN --mount=type=bind,source=build/nvidia-kmod.sh,target=/ctx/nvidia-kmod.sh \
     --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
@@ -49,7 +61,8 @@ RUN --network=none \
     --mount=type=tmpfs,target=/tmp \
     bash /ctx/nvidia-kmod.sh build
 
-FROM base AS nvidia-sign
+FROM kmod-base AS nvidia-sign
+ARG KVER
 # Build secrets are not part of the layer cache key: the cert's hash is, via
 # this arg, so a new db key re-runs every signing step (checked against the
 # mounted secret in each of them).
