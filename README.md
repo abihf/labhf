@@ -5,7 +5,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | Requirement | How |
 |---|---|
 | Atomic updates | bootc **composefs backend**, images pulled from an OCI registry, `bootc upgrade` / `rollback` |
-| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods (built unsigned, signed in a separate offline stage) |
+| Upstream binaries | Fedora bootc base + Fedora / RPM Fusion / NVIDIA / Rancher / COPR RPMs. Only compile: NVIDIA open kmod via akmods, and the Falco kmod when Falco has no prebuilt one for the kernel (both built unsigned, signed in a separate offline stage) |
 | Sealed boot, own keys | Secure Boot (own PK/KEK/db) → signed systemd-boot → signed **UKI** whose cmdline carries the composefs digest → fs-verity on every file |
 | Encrypted state | root partition is **plain** (image only, fs-verity checked); bootc's `/state` (= `/etc`, `/var`, `/home`) is a separate LUKS2 partition mounted at `/sysroot/state` in the initrd; TPM2 policy PCR 0+2+3+5+7, PCR 15 = 0, plus a [rollback lock](#tpm-rollback-lock) (systemd-pcrlock on PCR 4): only UKIs of current bootc deployments unlock, not older signed releases |
 | Data | existing mdadm RAID5 (USB, unencrypted) → `/media/data`; fast shared data in `/home/public` on the encrypted state volume, also at `/media/public` (symlink); both `container_file_t` for k3s hostPaths |
@@ -17,6 +17,7 @@ Immutable, sealed homelab OS built with [bootc](https://bootc.dev) on Fedora.
 | VPN | WireGuard: in-kernel module (Fedora, signed) + `wireguard-tools` (`wg`); `wg0` as a networkd `.netdev` (or `wg-quick`) |
 | SELinux | Fedora targeted policy, enforcing; `container-selinux` + `k3s-selinux` |
 | k3s + NVIDIA | static k3s binary, `nvidia-container-toolkit`; k3s auto-registers the `nvidia` runtime; RuntimeClass + device plugin auto-deployed |
+| Falco | db-signed `falco.ko` (kmod driver; the eBPF drivers can't read kernel memory under `lockdown=confidentiality`), loaded at boot; Falco itself deployed in k3s, pinned to that module's release; see [Falco in k3s](#falco-in-k3s) |
 | Users | `abi` (uid 1000) admin via `/etc/sudoers.d/50-abi`, password + SSH key set by `labhf-install-disk`; `gui` (uid 2000) runs the dashboard |
 | Dashboard | user `gui` (uid 2000) auto-logins on tty1 → `labhf-gui`: picks the AMD iGPU (not the NVIDIA), `cage` + `wlr-randr` (HDMI-A-1 rotated 90°) + [home-dashboard](https://github.com/abihf/home-dashboard) (a pinned release; native Wayland, OpenGL ES; no network); backgrounds in `/var/lib/home-dashboard/bg`, settings in `/etc/labhf/home-dashboard.env` |
 
@@ -184,6 +185,45 @@ Address=10.0.0.1/24
 
 `sudo networkctl reload && sudo wg show`. `wg-quick@wg0` with
 `/etc/wireguard/wg0.conf` also works; use one or the other for an interface.
+
+### Falco in k3s
+
+Falco's eBPF drivers (`modern_ebpf`, `ebpf`) need BPF reads of kernel memory,
+which `lockdown=confidentiality` blocks, and the module falcoctl downloads or
+builds is unsigned, so `module.sig_enforce` rejects it. The image ships its
+own `falco.ko`, signed with the db key (`build/falco-kmod.sh`, stages
+`falco-build` / `falco-sign`): Falco's prebuilt module for the image kernel
+if download.falco.org has one (no checksum published: TLS, then name,
+version and vermagic are checked), else built from the
+`falcosecurity/libs` source (`ADD --checksum`), offline. It is loaded at boot
+(`modules-load.d/labhf-falco.conf`) and stays idle until Falco opens
+`/dev/falco*`.
+
+The image also deploys Falco, pinned to the release that module is built
+for, so the two only change together, in one `bootc upgrade`. Falco refuses
+to start on a driver with another API or schema version, and k3s would carry
+on without it. `build/falco-manifest.sh` writes the HelmChart
+`/usr/share/labhf/k3s-manifests/falco.yaml` (Falco image by digest,
+`driver.kind=kmod`, no driver loader) for the chart file it ships
+(`ADD --checksum`, served by k3s from `static/charts`, so nothing comes from
+the chart repo). The build fails unless the chart's `appVersion` is
+`FALCO_VERSION` and that release's `cmake/modules/driver.cmake` names
+`FALCO_DRIVER_VERSION` and `FALCO_LIBS_SHA256`.
+
+To bump Falco, change these together in the Containerfile: `FALCO_VERSION`,
+`FALCO_CHART_VERSION` + `FALCO_CHART_SHA256` (the chart release for it),
+`FALCO_IMAGE_DIGEST` (the multi-arch index of
+`docker.io/falcosecurity/falco:<version>`), and `FALCO_DRIVER_VERSION`,
+`FALCO_LIBS_SHA256` and `FALCO_DRIVER_CMAKE_SHA256` (from that release's
+`driver.cmake`).
+
+Machine-local chart values (outputs, Falcosidekick, ...) go in a
+`HelmChartConfig` named `falco` in `kube-system`, in
+`/var/lib/rancher/k3s/server/manifests/`; leave `image` and `driver` alone.
+Don't install Falco with `helm` by hand: that brings back the mismatch the
+pinning avoids. To not run Falco on a machine, put `disable: [labhf-falco]` in
+a file in `/etc/rancher/k3s/config.yaml.d/` and restart k3s: it uninstalls the
+chart (the module stays loaded, idle).
 
 ### Firewall
 
@@ -411,11 +451,13 @@ Pinning directory mtimes and flattening (`Containerfile.tree`), chunkah and
 the seal run every time and are not cached: their layers change whenever
 `rootfs` does, and the flat one is the whole image. A new
 digest of `quay.io/fedora/fedora-bootc` (every day or two) invalidates every step after
-`FROM base`. The NVIDIA kmod stages are not built on it: they start from a
-digest-pinned `quay.io/fedora/fedora:45` (`KMOD_BASE` in the Makefile, bump it
-now and then) and take the base image's kernel and RPM Fusion's `akmod-nvidia`
-version as build arguments (`scripts/nvidia-versions.sh`), so the module is
-only rebuilt when one of those changes. Local builds remember RPM Fusion's
+`FROM base`. The NVIDIA and Falco kmod stages are not built on it: they start
+from `kmod-base`, a digest-pinned `quay.io/fedora/fedora:45` (`KMOD_BASE` in
+the Makefile, bump it now and then) with the kernel headers and build/sign
+tools (`build/kmod-base.sh`, one layer for all four kmod stages), and take
+the base image's kernel and RPM Fusion's `akmod-nvidia` version as build
+arguments (`scripts/nvidia-versions.sh`), so the modules are only rebuilt
+when one of those (or `FALCO_DRIVER_VERSION`) changes. Local builds remember RPM Fusion's
 answer for 12 hours in `out/nvidia-version` (delete it to ask again, or pin a
 version with `make build NVIDIA_VERSION=3:620.73.04-1.fc45`). Package updates that land without a new base image wait for the next
 one. Keep the `labhf-cache`
@@ -448,6 +490,7 @@ plain Fedora base, which run Fedora's tools and our scripts only:
 | Stage | Signs | With |
 |---|---|---|
 | `nvidia-sign` | NVIDIA `.ko` files | kernel-devel's `sign-file` |
+| `falco-sign` | `falco.ko` | kernel-devel's `sign-file` |
 | `sdboot-sign` | systemd-boot | `systemd-sbsign` |
 | `sealer` | the UKI | `bootc container ukify` (the sealer's own bootc, byte-identical to the target's) |
 

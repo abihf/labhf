@@ -64,6 +64,13 @@ fi
 # systemd-boot is signed in the sdboot-sign stage (Containerfile.seal): this tree
 # has third-party packages installed, so the db key is never mounted here.
 
+# --- falco.ko (falco-sign stage, copied in after packages.sh's depmod) --------
+falco_ko=/usr/lib/modules/${kver}/extra/falco.ko.xz
+[[ -n $(modinfo -F signer "$falco_ko") ]] || { echo "unsigned module: $falco_ko" >&2; exit 1; }
+[[ $(modinfo -F signer "$falco_ko") == $(modinfo -F signer nvidia -k "$kver") ]]
+depmod -a "$kver"
+modinfo -k "$kver" -F filename falco
+
 # --- initramfs (bootc composefs module, LUKS + TPM2) -------------------------
 # The base image adds dracut's clevis module; clevis-dracut left together with
 # NetworkManager (we unlock with systemd-cryptenroll's TPM2 token, not clevis)

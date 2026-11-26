@@ -1,11 +1,14 @@
 [Unit]
-Description=Link labhf k3s manifests into the k3s auto-deploy directory
+Description=Link labhf k3s manifests and charts into the k3s auto-deploy directories
 Before=k3s.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/mkdir -p /var/lib/rancher/k3s/server/manifests
+ExecStart=/usr/bin/mkdir -p /var/lib/rancher/k3s/server/manifests /var/lib/rancher/k3s/server/static/charts
 ExecStart=/usr/bin/bash -c 'for f in /usr/share/labhf/k3s-manifests/*.yaml; do ln -sfn "$f" "/var/lib/rancher/k3s/server/manifests/labhf-$(basename "$f")"; done'
+# charts the manifests reference as https://%%{KUBERNETES_API}%%/static/charts/<file>;
+# drop links to charts an older image had
+ExecStart=/usr/bin/bash -c 'find /var/lib/rancher/k3s/server/static/charts -maxdepth 1 -xtype l -lname "/usr/share/labhf/k3s-charts/*" -delete; for f in /usr/share/labhf/k3s-charts/*.tgz; do ln -sfn "$f" "/var/lib/rancher/k3s/server/static/charts/$(basename "$f")"; done'
 
 [Install]
 WantedBy=k3s.service

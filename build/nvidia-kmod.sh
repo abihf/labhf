@@ -3,15 +3,15 @@
 # NVIDIA *open* kernel module for the image's kernel, signed with our Secure
 # Boot db key. The key never meets third-party code or the network:
 #
-# Both stages are plain Fedora (kmod-base), not the bootc base: KVER is the
-# base image's kernel, NVIDIA_VERSION the akmod-nvidia to build (build args).
+# Both stages are plain Fedora (kmod-base, with kernel-devel and the build and
+# sign tools: build/kmod-base.sh), not the bootc base: KVER is the base image's
+# kernel, NVIDIA_VERSION the akmod-nvidia to build (build args).
 #
 #   nvidia-build stage (kmod-base + RPM Fusion):
-#     deps        online, no key: RPM Fusion repos, kernel-devel, akmod-nvidia
+#     deps        online, no key: RPM Fusion repos, akmod-nvidia
 #     build       --network=none, no key: rpmbuild of the akmod SRPM ->
 #                 unsigned kmod RPM in /out
 #   nvidia-sign stage (clean kmod-base, Fedora packages only):
-#     sign-deps   online, no key: kernel-devel (for scripts/sign-file), cpio
 #     sign        --network=none, key: sign every .ko from the RPM with
 #                 Fedora's sign-file -> /out/modules/..., /out/signer
 #
@@ -25,22 +25,13 @@ dnf() { command dnf --setopt=keepcache=True "$@"; }
 kver=${KVER:?build arg KVER (kernel of the base image) is not set}
 fedver=$(rpm -E %fedora)
 
-# kernel-devel must match the image kernel exactly. Fedora's updates repo only
-# keeps the newest build, so fall back to koji for an older one.
-install_kernel_devel() {
-    if ! dnf -y install "kernel-devel-${kver}"; then
-        local kv=${kver%.*} arch=${kver##*.}
-        local ver=${kv%%-*} rel=${kv#*-}
-        dnf -y install "https://kojipkgs.fedoraproject.org/packages/kernel/${ver}/${rel}/${arch}/kernel-devel-${kver}.rpm"
-    fi
-}
-
-case ${1:?usage: nvidia-kmod.sh deps|build|sign-deps|sign} in
+case ${1:?usage: nvidia-kmod.sh deps|build|sign} in
 deps)
     dnf -y install \
         "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedver}.noarch.rpm" \
         "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${fedver}.noarch.rpm"
-    install_kernel_devel
+    # kernel-devel-${kver}: kmod-base
+    rpm -q "kernel-devel-${kver}"
     # Build the open kernel modules (Turing and newer GPUs)
     echo '%_with_kmod_nvidia_open 1' > /etc/rpm/macros.nvidia-kmod
     # CI builds the kmod RPM afresh every run. Build time (and so the mtimes
@@ -71,12 +62,6 @@ build)
     cp -v "${top}"/RPMS/*/kmod-nvidia-"${kver}"-*.rpm /out/
     rpm -q --qf '%{EPOCH}:%{VERSION}-%{RELEASE}\n' akmod-nvidia | sed 's/(none)://' > /out/nvidia-version
     cat /out/nvidia-version
-    ;;
-
-sign-deps)
-    install_kernel_devel
-    # kmod: modinfo (plain Fedora doesn't have it, the bootc base does)
-    dnf -y install cpio xz zstd openssl kmod
     ;;
 
 sign)

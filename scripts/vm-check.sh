@@ -32,6 +32,7 @@ for m in firewire-core thunderbolt bluetooth sctp udf esp4 l2tp_core nfs sunrpc;
     modprobe -n -v "$m" 2>&1 | grep -q 'install /bin/false' && printf '%s:blocked ' "$m" || printf '%s:LOADABLE ' "$m"
 done; echo
 echo "nvidia signer: $(modinfo -F signer nvidia)"
+echo "falco: signer $(modinfo -F signer falco), version $(cat /sys/module/falco/version 2>/dev/null || echo NOT-LOADED), devices $(ls /dev/falco* 2>/dev/null | wc -l)"
 
 sec "performance"
 tr ' ' '\n' < /proc/cmdline | grep -E '^(init_on_|iommu\.strict)' | tr '\n' ' '; echo
