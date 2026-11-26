@@ -452,11 +452,14 @@ the seal run every time and are not cached: their layers change whenever
 `rootfs` does, and the flat one is the whole image. A new
 digest of `quay.io/fedora/fedora-bootc` (every day or two) invalidates every step after
 `FROM base`. The NVIDIA and Falco kmod stages are not built on it: they start
-from `kmod-base`, a digest-pinned `quay.io/fedora/fedora:45` (`KMOD_BASE` in
-the Makefile, bump it now and then) with the kernel headers and build/sign
-tools (`build/kmod-base.sh`, one layer for all four kmod stages), and take
-the base image's kernel and RPM Fusion's `akmod-nvidia` version as build
-arguments (`scripts/nvidia-versions.sh`), so the modules are only rebuilt
+from `kmod-base`, our own `ghcr.io/<owner>/labhf-kmod:<kernel>`
+(`Containerfile.kmod`: `quay.io/fedora/fedora:45` + the kernel headers and
+build/sign tools of `build/kmod-base.sh`), built once per kernel and pushed by
+CI (`scripts/kmod-image.sh`; local builds pull it or build their own). Not a
+digest-pinned quay.io image: quay drops untagged manifests, and the pin then
+fails the build. They take the base image's kernel and RPM Fusion's
+`akmod-nvidia` version as build arguments (`scripts/nvidia-versions.sh`), so
+the modules are only rebuilt
 when one of those (or `FALCO_DRIVER_VERSION`) changes. Local builds remember RPM Fusion's
 answer for 12 hours in `out/nvidia-version` (delete it to ask again, or pin a
 version with `make build NVIDIA_VERSION=3:620.73.04-1.fc45`). Package updates that land without a new base image wait for the next

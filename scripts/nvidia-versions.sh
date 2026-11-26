@@ -1,24 +1,20 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Print the --build-arg flags that key the NVIDIA kmod stages (Containerfile):
-#   KVER            the base image's kernel (kernel-core), e.g. 7.3.4-300.fc45.x86_64
+# Print the --build-arg flag that keys the NVIDIA kmod stages (Containerfile)
+# besides KVER (scripts/kmod-image.sh):
 #   NVIDIA_VERSION  RPM Fusion's current akmod-nvidia, e.g. 3:620.73.04-1.fc45
-# Those stages build FROM a pinned plain Fedora image, so their layer cache
-# only misses when one of these changes, not with every new base image.
+# Those stages build FROM the kmod image for KVER, so their layer cache only
+# misses when one of these changes, not with every new base image.
 #
-# usage: nvidia-versions.sh BASE_IMAGE KMOD_BASE_IMAGE
+# usage: nvidia-versions.sh KMOD_BASE_IMAGE   (runs the RPM Fusion query in it)
 # env:   PODMAN
 #        NVIDIA_VERSION        use this akmod-nvidia version, don't ask RPM Fusion
 #        NVIDIA_VERSION_CACHE  file that keeps RPM Fusion's answer for 12 hours
 #                              (local builds: the query takes 5-10 s)
 set -euo pipefail
 podman=${PODMAN:-podman}
-base=${1:?base image} kmod_base=${2:?kmod base image}
+kmod_base=${1:?kmod base image}
 cache=${NVIDIA_VERSION_CACHE:-}
-
-# same image `podman build` uses: the local one if present, else pulled (0.2 s)
-kver=$($podman run --rm --network=none "$base" \
-    rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core)
 
 if [[ -n ${NVIDIA_VERSION:-} ]]; then
     nvidia=$NVIDIA_VERSION
@@ -36,7 +32,6 @@ else
             --latest-limit=1 --qf "%{epoch}:%{version}-%{release}\n" akmod-nvidia.x86_64')
     if [[ -n $cache ]]; then mkdir -p "$(dirname "$cache")"; printf '%s\n' "$nvidia" > "$cache"; fi
 fi
-[[ $kver =~ ^[0-9].*\.x86_64$ && $(wc -l <<<"$kver") == 1 ]] || { echo "bad kernel version: $kver" >&2; exit 1; }
 [[ $nvidia =~ ^[0-9]+:[0-9.]+-[^[:space:]]+$ ]] || { echo "bad akmod-nvidia version: $nvidia" >&2; exit 1; }
-echo "nvidia-versions: kernel $kver, akmod-nvidia $nvidia" >&2
-echo "--build-arg KVER=$kver --build-arg NVIDIA_VERSION=$nvidia"
+echo "nvidia-versions: akmod-nvidia $nvidia" >&2
+echo "--build-arg NVIDIA_VERSION=$nvidia"

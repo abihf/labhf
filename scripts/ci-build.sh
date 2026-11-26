@@ -19,8 +19,11 @@ trap 'podman logout ghcr.io >/dev/null 2>&1 || true' EXIT
 # the flat one is the whole image. Secrets are not in the cache key: SB_CERT_SHA256 is,
 # so a new db key re-runs the signing steps. Cached layers hold signed files,
 # never the key. A new base image digest invalidates everything after FROM.
+# The kmod base image (${IMAGE_REPO}-kmod:<kernel>, Containerfile.kmod) is
+# pulled, or built and pushed once per kernel.
 cache="${IMAGE_REPO}-cache"
 make build PODMAN=podman IMAGE=localhost/labhf:ci BUILD_ARGS="$BUILD_LABELS" \
+    KMOD_REPO="${IMAGE_REPO}-kmod" KMOD_PUSH=1 KMOD_BUILD_ARGS="$BUILD_LABELS" \
     TREE_BUILD_FLAGS="--layers --cache-from $cache --cache-to $cache"
 
 # the db key is a build secret only: make sure no copy of it is in the image

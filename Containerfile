@@ -8,8 +8,8 @@
 #
 # Stages:
 #   base            upstream Fedora bootc image
-#   kmod-base       plain Fedora, pinned by digest (KMOD_BASE, from the Makefile),
-#                   + kernel-devel for KVER and the module build/sign tools
+#   kmod-base       labhf-kmod:<KVER> (KMOD_BASE, Containerfile.kmod): plain
+#                   Fedora + kernel-devel for KVER and the module build/sign tools
 #   nvidia-build    builds the NVIDIA open kernel module, unsigned (only compile step)
 #   nvidia-sign     signs its .ko files
 #   falco-build     Falco's kmod: prebuilt if Falco has one for KVER, else compiled
@@ -38,7 +38,7 @@
 
 ARG FEDORA=45
 ARG BASE=quay.io/fedora/fedora-bootc:${FEDORA}
-# plain Fedora for the kmod stages, pinned by digest (set by the Makefile)
+# base of the kmod stages: labhf-kmod:<KVER> (scripts/kmod-image.sh, via the Makefile)
 ARG KMOD_BASE
 # Falco: the release deployed in k3s (falco-manifest) and the driver its
 # kmod is built from (falco-src); see the Falco kmod section below
@@ -51,8 +51,8 @@ FROM ${BASE} AS base
 
 # ---------------------------------------------------------------------------
 # NVIDIA kmod. Not FROM base: its image changes every day or two, and every
-# step after FROM base misses the layer cache. Built on the pinned KMOD_BASE
-# for KVER (the base image's kernel) and NVIDIA_VERSION (RPM Fusion's
+# step after FROM base misses the layer cache. Built on KMOD_BASE (our own
+# image, one tag per kernel: Containerfile.kmod) for KVER (the base image's kernel) and NVIDIA_VERSION (RPM Fusion's
 # akmod-nvidia), both set by the Makefile (scripts/nvidia-versions.sh), so the
 # cache only misses when the kernel or the driver changes.
 # Only the script is mounted (not all of build/): editing other build scripts
@@ -61,10 +61,10 @@ FROM ${BASE} AS base
 # only), shared by the build and the sign stages of both kmods.
 FROM ${KMOD_BASE} AS kmod-base
 ARG KVER
-RUN --mount=type=bind,source=build/kmod-base.sh,target=/ctx/kmod-base.sh \
-    --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
-    --mount=type=tmpfs,target=/tmp \
-    bash /ctx/kmod-base.sh
+# headers for exactly this kernel (KMOD_BASE and KVER come from the same run
+# of scripts/kmod-image.sh; this catches a hand-set mismatch)
+RUN --network=none rpm -q "kernel-devel-${KVER}" && \
+    test -x "/usr/src/kernels/${KVER}/scripts/sign-file"
 
 FROM kmod-base AS nvidia-build
 ARG KVER

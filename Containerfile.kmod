@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# labhf-kmod:<KVER> — plain Fedora + kernel-devel for KVER (the base image's
+# kernel) and the tools to build and sign out-of-tree modules
+# (build/kmod-base.sh). The kmod stages of the Containerfile start FROM it.
+#
+# Built by scripts/kmod-image.sh, once per kernel (and per change of this
+# recipe), and pushed to ghcr.io/<owner>/labhf-kmod:<KVER> by CI. A tag of our
+# own instead of a digest-pinned quay.io/fedora/fedora: quay drops untagged
+# manifests, and the pinned digest then fails the build. It also keeps the
+# kmod layer cache stable: it only misses when the kernel changes, not with
+# every Fedora image update.
+ARG FEDORA=45
+FROM quay.io/fedora/fedora:${FEDORA}
+ARG KVER
+RUN --mount=type=bind,source=build/kmod-base.sh,target=/ctx/kmod-base.sh \
+    --mount=type=cache,id=labhf-dnf,target=/var/cache/libdnf5,sharing=locked \
+    --mount=type=tmpfs,target=/tmp \
+    bash /ctx/kmod-base.sh
